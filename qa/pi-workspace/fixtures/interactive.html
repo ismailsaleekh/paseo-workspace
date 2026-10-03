@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workspace interaction oracle</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        font: 18px system-ui;
+        color: #12243a;
+        background: #fff;
+      }
+      label,
+      button,
+      output {
+        display: block;
+        margin: 16px 0;
+      }
+      input,
+      button {
+        min-height: 44px;
+      }
+      input {
+        width: 90%;
+      }
+      button {
+        background: #164a9f;
+        color: #fff;
+        padding: 12px;
+        border: 0;
+      }
+      #marker {
+        width: 96px;
+        height: 96px;
+        background: #164a9f;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Change a value</h1>
+    <p id="explanation">The output is the square of the input.</p>
+    <label for="value">Input</label>
+    <input id="value" aria-label="Input value" type="range" min="0" max="10" step="1" value="2" />
+    <output id="result" aria-label="Calculated result">4</output>
+    <button id="select-result" type="button">Discuss this result</button>
+    <div id="marker" aria-label="Capture marker"></div>
+    <p id="selected">Nothing selected</p>
+    <script>
+      (() => {
+        const bridge = window.paseoVisual;
+        if (!bridge) throw new Error("Paseo visual bridge is missing");
+        const input = document.getElementById("value");
+        const output = document.getElementById("result");
+        const selectedText = document.getElementById("selected");
+        let value = 2;
+        let selection = null;
+
+        function render() {
+          input.value = String(value);
+          output.textContent = String(value * value);
+          selectedText.textContent = selection === null ? "Nothing selected" : "Selected: result";
+        }
+        function setValue(next) {
+          if (!Number.isInteger(next) || next < 0 || next > 10)
+            throw new Error("Invalid fixture value");
+          value = next;
+          render();
+        }
+        bridge.register({
+          read: () => ({
+            state: { value },
+            selection: selection === null ? null : { id: "result", text: output.textContent },
+          }),
+          restore: (snapshot) => {
+            setValue(snapshot.state.value);
+            selection = snapshot.selection;
+            render();
+          },
+          actions: {
+            setValue: {
+              description: "Set the input value",
+              parameters: {
+                type: "object",
+                properties: { value: { type: "integer", minimum: 0, maximum: 10 } },
+                required: ["value"],
+                additionalProperties: false,
+              },
+              run: (input) => {
+                setValue(input.value);
+              },
+            },
+          },
+        });
+        input.addEventListener("input", () => {
+          setValue(Number(input.value));
+          bridge.publish();
+        });
+        document.getElementById("select-result").addEventListener("click", () => {
+          selection = { id: "result", text: output.textContent };
+          render();
+          bridge.publish();
+        });
+        render();
+      })();
+    </script>
+  </body>
+</html>
