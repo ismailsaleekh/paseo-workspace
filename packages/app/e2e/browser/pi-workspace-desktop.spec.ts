@@ -816,8 +816,12 @@ async function checkEgress(run: Run): Promise<void> {
     )
     .toBe("1");
   const state = egressStateSchema.parse((await inspect(run.pi, presented.id)).state);
-  expect(state.attempted).toEqual(egressVectors);
+  // The witness appends its navigation-like vectors after it publishes done; a later read may
+  // already include them. Require every early vector in order, then only declared late vectors.
+  expect(state.attempted.slice(0, egressVectors.length)).toEqual(egressVectors);
   expect(state.lateVectors).toEqual(["windowOpen", "download", "topNavigation"]);
+  const late = state.attempted.slice(egressVectors.length);
+  expect(late).toEqual(state.lateVectors.slice(0, late.length));
   await new Promise((resolve) => setTimeout(resolve, 4000));
   expect(run.sink.arrivals).toEqual([]);
   // Navigation, windows and downloads were denied: the document is still the displayed guest.

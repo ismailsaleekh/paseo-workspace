@@ -233,9 +233,33 @@ try {
     if (!device.find("message-input-root")) fail(`conversation not displayed: ${screenSummary()}`);
   }
 
+  /**
+   * Harness setup only (never a feature check): on the software-rendered emulator a sheet opened
+   * during cold start can stall with a dim backdrop and no content. Dismiss it and tap again.
+   */
+  async function openDirectConnectionForm() {
+    await device.waitForId("welcome-screen", 90_000);
+    await sleep(2000);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await device.tapId("welcome-direct-connection", 30_000);
+      try {
+        await device.waitForId("direct-host-input", 20_000);
+        return;
+      } catch {
+        process.stdout.write(
+          `direct connection form did not open (attempt ${attempt}); retrying\n`,
+        );
+        device.key(4);
+        await sleep(2000);
+        if (!device.find("welcome-screen")) device.start(`${PASEO_PACKAGE}/.MainActivity`);
+      }
+    }
+    fail("the direct connection form never opened");
+  }
+
   await check("Paseo Android app connects to the isolated daemon", async () => {
     device.start(`${PASEO_PACKAGE}/.MainActivity`);
-    await device.tapId("welcome-direct-connection", 90_000);
+    await openDirectConnectionForm();
     await device.typeInto("direct-host-input", "127.0.0.1");
     await device.typeInto("direct-port-input", String(daemon.port));
     device.key(66);
@@ -327,8 +351,20 @@ try {
           },
           { timeout: 40_000, interval: 2000 },
         );
-        if (JSON.stringify(state.attempted) !== JSON.stringify(egressVectors))
+        // The witness appends its navigation-like vectors after it publishes done; a later read
+        // may already include them. Require every early vector in order, then only declared late
+        // vectors in order.
+        const early = state.attempted.slice(0, egressVectors.length);
+        const late = state.attempted.slice(egressVectors.length);
+        if (JSON.stringify(early) !== JSON.stringify(egressVectors))
           fail(`attempted ${JSON.stringify(state.attempted)}`);
+        if (
+          JSON.stringify(state.lateVectors) !==
+          JSON.stringify(["windowOpen", "download", "topNavigation"])
+        )
+          fail(`late vectors ${JSON.stringify(state.lateVectors)}`);
+        if (JSON.stringify(late) !== JSON.stringify(state.lateVectors.slice(0, late.length)))
+          fail(`unexpected trailing vectors ${JSON.stringify(late)}`);
         const p = state.privileged;
         for (const key of [
           "require",
