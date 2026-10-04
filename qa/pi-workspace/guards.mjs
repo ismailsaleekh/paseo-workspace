@@ -10,6 +10,7 @@ const checks = [
   { name: "Pi native tree primitives", args: ["qa/pi-workspace/pi-tree-primitive.mjs"] },
   { name: "Pi tool-batch yielding", args: ["qa/pi-workspace/pi-yield-primitive.mjs"] },
   { name: "Existing composer preservation", args: ["qa/pi-workspace/composer-primitive.mjs"] },
+  { name: "App bootstrap frame ownership", args: ["qa/pi-workspace/seed-frame-primitive.mjs"] },
   {
     name: "Actual isolated Paseo/Pi loop",
     args: ["--import", "tsx", "qa/pi-workspace/daemon-primitive.mjs"],

@@ -155,6 +155,9 @@ const test = daemonTest.extend<{
 
       await page.addInitScript(
         ({ daemon, preferences, seedNonce: nonce, extraHostsKey }) => {
+          // Playwright also runs this in child frames. Only the app owns this storage;
+          // opaque sandboxed previews cannot access it and must not receive app setup.
+          if (window.top !== window) return;
           // `addInitScript` runs on every navigation (including reloads). Some tests intentionally
           // override storage and reload; they can opt out of seeding for the *next* navigation by
           // setting this flag before the reload.

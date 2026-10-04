@@ -160,7 +160,9 @@ async function callTool(input: CallToolInput): Promise<unknown> {
   const result = results.at(-1);
   if (!result) throw new Error("No actual Pi tool result was persisted");
   expect(result.toolName).toBe(input.name);
-  expect(result.isError).toBe(input.error === true);
+  expect(result.isError, JSON.stringify({ tool: result.toolName, details: result.details })).toBe(
+    input.error === true,
+  );
   return result.details;
 }
 
