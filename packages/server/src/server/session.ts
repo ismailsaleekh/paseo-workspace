@@ -1,4 +1,7 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
+import { VisualSession } from "./session/pi-workspace/session.js";
+import { VisualFailure } from "@getpaseo/protocol/pi-workspace/contracts";
+import type { VisualService } from "./pi-workspace/service.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
@@ -458,6 +461,7 @@ export interface SessionOptions {
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
+  piWorkspace?: VisualService;
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
@@ -661,6 +665,7 @@ interface ClientActivity {
 }
 
 export class Session {
+  private readonly piWorkspace: VisualSession;
   readonly delivery = new SessionDelivery(
     (source, message) => {
       if (!this.authorization.allowsOutbound(message)) return;
@@ -882,6 +887,17 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.agentManager = agentManager;
+    this.piWorkspace = new VisualSession({
+      service: options.piWorkspace,
+      delivery: this.delivery,
+      assertAgent: (agentId) => {
+        const agent = this.agentManager.getAgent(agentId);
+        if (!agent || agent.internal || agent.provider !== "pi") {
+          throw new VisualFailure("UNKNOWN_AGENT", "Visuals require a managed Pi agent");
+        }
+      },
+      reply: (message) => this.emit(message),
+    });
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
@@ -2159,6 +2175,11 @@ export class Session {
     this.authorization.replacePermissions(permissions);
     if (!this.authorization.allowsPermission("workspace.write")) {
       void this.delivery
+        .releaseFamily("pi-workspace")
+        .catch((error) =>
+          this.sessionLogger.error({ err: error }, "Failed to release revoked visual hosting"),
+        );
+      void this.delivery
         .releaseFamily("browser-host")
         .catch((error) =>
           this.sessionLogger.error({ err: error }, "Failed to release revoked browser hosting"),
@@ -2266,7 +2287,7 @@ export class Session {
         return undefined;
       });
     }
-    return undefined;
+    return this.piWorkspace.handle(msg);
   }
 
   private async dispatchInboundMessage(msg: SessionInboundMessage, source?: object): Promise<void> {

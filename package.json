@@ -25,6 +25,7 @@
     "packages/highlight",
     "packages/plugin",
     "packages/protocol",
+    "packages/pi-workspace",
     "packages/client",
     "packages/server",
     "packages/app",

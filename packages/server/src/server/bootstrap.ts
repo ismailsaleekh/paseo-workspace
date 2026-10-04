@@ -1,4 +1,7 @@
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
+import { VisualStorage } from "./pi-workspace/storage.js";
+import { VisualService } from "./pi-workspace/service.js";
+import { VisualAttachmentBridge } from "./pi-workspace/attachment.js";
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
 import { constants, existsSync, unlinkSync } from "fs";
@@ -924,8 +927,16 @@ export async function createPaseoDaemon(
     const git = daemonConfigStore.get().git;
     if (git) configureGitProcessPolicy(git);
   });
+  const piWorkspace = new VisualService(
+    new VisualStorage(path.join(config.paseoHome, "pi-workspace")),
+  );
+  const visualAttachment = new VisualAttachmentBridge({
+    execute: (owner, operation, signal) => piWorkspace.execute(owner, operation, signal),
+    reportFailure: (error) => logger.error({ err: error }, "Pi visual attachment failed"),
+  });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
   const agentManager = new AgentManager({
+    piWorkspace: (agentId) => visualAttachment.issue(agentId),
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
@@ -1579,6 +1590,7 @@ export async function createPaseoDaemon(
   const start = async () => {
     let mainStarted = false;
     try {
+      await visualAttachment.start();
       localCredential = await writeLocalCredential(config.paseoHome);
       if (serviceProxyListenTarget) {
         const boundServiceProxyTarget = await serviceProxy.startStandalone({
@@ -1724,6 +1736,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
+              piWorkspace,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -1770,6 +1783,8 @@ export async function createPaseoDaemon(
       speechService.start();
       scriptHealthMonitor.start();
     } catch (error) {
+      piWorkspace.close();
+      await visualAttachment.stop();
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
@@ -1798,6 +1813,8 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    piWorkspace.close();
+    await visualAttachment.stop();
     await closeAllAgents(logger, agentManager);
     await agentManager.flushForShutdown().catch(() => undefined);
     detachAgentStoragePersistence();

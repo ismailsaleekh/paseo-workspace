@@ -317,6 +317,7 @@ export interface CreateAgentOptions {
 }
 
 export interface AgentManagerOptions {
+  piWorkspace?: (agentId: string) => ReturnType<NonNullable<AgentLaunchContext["piWorkspace"]>>;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -717,6 +718,7 @@ function detachedAgentLabelPatch(labels: Record<string, string>): AgentLabelPatc
 }
 
 export class AgentManager {
+  private readonly piWorkspace: AgentManagerOptions["piWorkspace"];
   private readonly pluginLifecycle: PluginLifecycle | undefined;
   private readonly clients = new Map<AgentProvider, AgentClient>();
   private readonly providerEnabled = new Map<AgentProvider, boolean>();
@@ -758,6 +760,7 @@ export class AgentManager {
   private acceptingAgentRegistrations = true;
 
   constructor(options: AgentManagerOptions) {
+    this.piWorkspace = options.piWorkspace;
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
@@ -5224,6 +5227,10 @@ export class AgentManager {
         callerAgentId: agentId,
         paseoToolPolicy,
       });
+    }
+    const issueVisualLease = this.piWorkspace;
+    if (client.provider === "pi" && opening?.purpose !== "history" && issueVisualLease) {
+      context.piWorkspace = () => issueVisualLease(agentId);
     }
     return context;
   }

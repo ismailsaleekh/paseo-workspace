@@ -1,0 +1,56 @@
+{
+  "name": "@getpaseo/pi-workspace",
+  "version": "0.1.0",
+  "description": "Conversation-bound interactive visual tools for Pi hosted by Paseo",
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "pi-package"
+  ],
+  "license": "Apache-2.0",
+  "files": [
+    "extensions/",
+    "src/",
+    "!src/**/*.test.ts",
+    "README.md",
+    "TEST_PLAN.md",
+    "TESTING.md",
+    "PUBLISHING.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:type-safety": "node --import tsx --test tests/package/type-safety.test.ts",
+    "test:unit": "node --import tsx --test src/source.test.ts src/tools.test.ts",
+    "test:sdk": "node --import tsx --test tests/sdk/extension.test.ts",
+    "test:rpc": "node --import tsx --test tests/rpc/extension.test.ts",
+    "test:package": "node --import tsx --test tests/package/manifest.test.ts",
+    "test:host": "vitest run --root ../.. packages/server/src/server/pi-workspace/storage.test.ts packages/server/src/server/pi-workspace/attachment.test.ts packages/server/src/server/pi-workspace/service.test.ts packages/app/src/pi-workspace/controller.test.ts --bail=1 --maxWorkers=1",
+    "test": "npm run typecheck && npm run test:type-safety && npm run test:unit && npm run test:sdk && npm run test:rpc && npm run test:package && npm run test:host",
+    "pack:dry-run": "npm pack --dry-run --ignore-scripts"
+  },
+  "dependencies": {
+    "@getpaseo/protocol": "0.10.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@types/node": "^20.9.0",
+    "tsx": "^4.6.0",
+    "typebox": "1.3.27",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/workspace.ts"
+    ]
+  }
+}

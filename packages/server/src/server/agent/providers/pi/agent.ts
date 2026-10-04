@@ -2435,6 +2435,12 @@ export class PiRpcAgentClient implements AgentClient {
     const paseoExtension = createPiPaseoExtensionFile(
       composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt),
     );
+    const visualLease = launchContext?.piWorkspace?.();
+    const cleanup = combineCleanup([
+      visualLease?.revoke,
+      mcpConfig?.cleanup,
+      paseoExtension?.cleanup,
+    ]);
     let runtimeSession: PiRuntimeSession;
     try {
       runtimeSession = await this.runtime.startSession({
@@ -2442,30 +2448,34 @@ export class PiRpcAgentClient implements AgentClient {
         model: config.model,
         thinkingOptionId: normalizePiThinkingOption(config.thinkingOptionId) ?? undefined,
         noSession: config.internal === true,
-        env: launchContext?.env,
+        env: { ...launchContext?.env, ...visualLease?.env },
         mcpConfigPath: mcpConfig?.path,
         extensionPaths: paseoExtension ? [paseoExtension.path] : undefined,
       });
     } catch (error) {
-      mcpConfig?.cleanup();
-      paseoExtension?.cleanup();
+      cleanup?.();
       throw error;
     }
     try {
+      const initialState = await runtimeSession.getState();
+      visualLease?.activate(async () => {
+        const state = await runtimeSession.getState();
+        if (!state.sessionId) throw new Error("Pi visual runtime has no session identity");
+        return state.sessionId;
+      });
       return new PiRpcAgentSession({
         runtimeSession,
         config,
-        initialState: await runtimeSession.getState(),
+        initialState,
         capabilities: capabilitiesForSession(mcpConfig !== null),
-        cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
+        cleanup,
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
         logger: this.logger,
         usagePollScheduler: this.usagePollScheduler,
       });
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
-      mcpConfig?.cleanup();
-      paseoExtension?.cleanup();
+      cleanup?.();
       throw error;
     }
   }
@@ -2498,29 +2508,37 @@ export class PiRpcAgentClient implements AgentClient {
         resumeConfig.config.daemonAppendSystemPrompt,
       ),
     );
+    const visualLease = launchContext?.piWorkspace?.();
     let runtimeSession: PiRuntimeSession;
     try {
       runtimeSession = await this.runtime.startSession(
         buildResumeStartInput({
           resumeConfig,
           sessionFile,
-          launchContext,
+          launchContext: { ...launchContext, env: { ...launchContext?.env, ...visualLease?.env } },
           mcpConfig,
           paseoExtension,
         }),
       );
     } catch (error) {
+      visualLease?.revoke();
       mcpConfig?.cleanup();
       paseoExtension?.cleanup();
       throw error;
     }
     try {
+      const initialState = await runtimeSession.getState();
+      visualLease?.activate(async () => {
+        const state = await runtimeSession.getState();
+        if (!state.sessionId) throw new Error("Pi visual runtime has no session identity");
+        return state.sessionId;
+      });
       return new PiRpcAgentSession({
         runtimeSession,
         config: resumeConfig.config,
-        initialState: await runtimeSession.getState(),
+        initialState,
         capabilities: capabilitiesForSession(mcpConfig !== null),
-        cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
+        cleanup: combineCleanup([visualLease?.revoke, mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
         logger: this.logger,
         usagePollScheduler: this.usagePollScheduler,
@@ -2529,6 +2547,7 @@ export class PiRpcAgentClient implements AgentClient {
       await runtimeSession.close().catch(() => undefined);
       mcpConfig?.cleanup();
       paseoExtension?.cleanup();
+      visualLease?.revoke();
       throw error;
     }
   }

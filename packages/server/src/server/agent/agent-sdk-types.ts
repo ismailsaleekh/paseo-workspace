@@ -7,6 +7,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
+import type { VisualRuntimeLease } from "../pi-workspace/attachment.js";
 
 export type { AgentProviderNotice, AgentTaskItem };
 
@@ -626,6 +627,8 @@ export interface AgentSessionConfig {
 }
 
 export interface AgentLaunchContext {
+  /** Runtime-only capability issuer; never part of persisted agent configuration. */
+  piWorkspace?: () => VisualRuntimeLease;
   agentId?: string;
   env?: Record<string, string>;
   /**

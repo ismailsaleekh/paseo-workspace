@@ -1,4 +1,5 @@
 import { subscribeTimeline, type TimelineMessage } from "./timeline-subscription/index.js";
+import type { VisualReceipt, VisualWireView } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { ProviderSnapshotUpdates } from "./provider-snapshots/index.js";
 import {
   ConnectionSubscriptions,
@@ -172,6 +173,19 @@ import type {
   BrowserAutomationExecuteRequest,
   BrowserAutomationExecuteResponse,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+
+export interface PiWorkspaceSnapshot {
+  requestId: string;
+  subscriptionId: string;
+  agentId: string;
+  view: VisualWireView;
+}
+
+export interface PiWorkspaceReceiptAck {
+  requestId: string;
+  agentId: string;
+  stateRevision: number;
+}
 
 export interface Logger {
   debug(obj: object, msg?: string): void;
@@ -2472,6 +2486,50 @@ export class DaemonClient {
         }
         return msg.payload;
       },
+    });
+  }
+
+  observePiWorkspace(
+    agentId: string,
+    signal?: AbortSignal,
+  ): OwnedSubscription<PiWorkspaceSnapshot> {
+    let membershipRequested = false;
+    return this.owned.observe(
+      async (accept) => {
+        membershipRequested = false;
+        const features = this.lastServerInfoMessage?.features;
+        if (features?.piWorkspace !== true || features.ownedSubscriptions !== true) {
+          throw new Error("Update the Paseo host to use Pi visual workspaces");
+        }
+        membershipRequested = true;
+        const requestId = this.createRequestId();
+        return this.sendRequest({
+          requestId,
+          message: { type: "pi_workspace.observe.request", requestId, agentId },
+          options: { skipQueue: true },
+          select: (message) => {
+            if (
+              message.type !== "pi_workspace.observe.response" ||
+              message.payload.requestId !== requestId
+            )
+              return null;
+            accept(message.payload);
+            return message.payload;
+          },
+        });
+      },
+      signal,
+      () => {
+        // A capability refusal allocated no server membership and must not reconnect-loop an older host.
+        if (membershipRequested)
+          this.disposeTransport(1011, "Pi visual subscription bootstrap failed");
+      },
+    );
+  }
+
+  sendPiWorkspaceReceipt(agentId: string, receipt: VisualReceipt): Promise<PiWorkspaceReceiptAck> {
+    return this.sendNamespacedCorrelatedSessionRequest<"pi_workspace.receipt.response">({
+      message: { type: "pi_workspace.receipt.request", agentId, receipt },
     });
   }
 

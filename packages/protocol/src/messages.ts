@@ -1,4 +1,11 @@
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
+import {
+  VisualSubscribeRequestSchema,
+  VisualSubscribeResponseSchema,
+  VisualEventMessageSchema,
+  VisualReceiptRequestSchema,
+  VisualReceiptResponseSchema,
+} from "./pi-workspace/rpc-schemas.js";
 export {
   AgentProfileSchema,
   AgentSkillSelectionSchema,
@@ -3151,6 +3158,8 @@ export const SubscriptionReleaseResponseSchema = z.object({
 });
 
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
+  VisualSubscribeRequestSchema,
+  VisualReceiptRequestSchema,
   BrowserHostRegisterRequestSchema,
   SubscriptionReleaseRequestSchema,
   SessionEventsSetSubscriptionRequestSchema,
@@ -3671,6 +3680,7 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         explicitEventSubscriptions: z.boolean().optional(),
         ownedSubscriptions: z.boolean().optional(),
+        piWorkspace: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
@@ -6724,6 +6734,9 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
 });
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  VisualSubscribeResponseSchema,
+  VisualReceiptResponseSchema,
+  VisualEventMessageSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,

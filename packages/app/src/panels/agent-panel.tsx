@@ -1,4 +1,5 @@
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { VisualHost } from "@/pi-workspace/visual-host";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -1273,6 +1274,9 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
 
   const dockContent = (
     <View style={styles.contentContainer}>
+      {effectiveAgent.provider === "pi" && hasActiveComposer ? (
+        <VisualHost serverId={serverId} agentId={agentId} />
+      ) : null}
       {streamContent}
 
       {showHistorySyncError ? (

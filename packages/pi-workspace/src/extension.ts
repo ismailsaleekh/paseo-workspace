@@ -1,0 +1,123 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { VisualFailure } from "@getpaseo/protocol/pi-workspace/contracts";
+import { VisualConnection } from "./connection.js";
+import {
+  createVisualTool,
+  presentParameters,
+  updateParameters,
+  actParameters,
+  inspectParameters,
+  listParameters,
+} from "./tools.js";
+
+const CONTEXT_TYPE = "paseo.visual.observation";
+
+export default function workspace(pi: ExtensionAPI): void {
+  const socketPath = process.env["PI_WORKSPACE_SOCKET"];
+  const capability = process.env["PI_WORKSPACE_CAPABILITY"];
+  const config = socketPath && capability ? { socketPath, capability } : null;
+  const connection = new VisualConnection(config);
+  const bind = (sessionId: string) => connection.bind(sessionId);
+  pi.registerTool(
+    createVisualTool({
+      name: "visual_present",
+      parameters: presentParameters,
+      connection,
+      bind,
+      description:
+        "Display a prepared self-contained HTML document, from inline HTML or one UTF-8 file relative to the current cwd, or reopen a stored visual by ID. No build, external assets, hidden model or separate server. Requires attached Paseo; rendered means the displayed client acknowledged this revision.",
+    }),
+  );
+  pi.registerTool(
+    createVisualTool({
+      name: "visual_update",
+      parameters: updateParameters,
+      connection,
+      bind,
+      description:
+        "Replace one stored visual's HTML against its observed source revision. Use inline HTML or one prepared UTF-8 file. Preserve compatible state and selection; stale revisions and failed restoration are explicit errors, and prior versions remain recoverable.",
+    }),
+  );
+  pi.registerTool(
+    createVisualTool({
+      name: "visual_act",
+      parameters: actParameters,
+      connection,
+      bind,
+      description:
+        "Invoke one action declared by the live visual, with its JSON value. Inspect first to discover actions. This cannot run arbitrary JavaScript, shell commands, host tools or browser automation.",
+    }),
+  );
+  pi.registerTool(
+    createVisualTool({
+      name: "visual_inspect",
+      parameters: inspectParameters,
+      connection,
+      bind,
+      description:
+        "Inspect the current or specified visual's live state, selection, actions, delivery identity and errors. Screenshot requests fail explicitly when actual-client capture is unsupported or offline; no image is fabricated.",
+    }),
+  );
+  pi.registerTool(
+    createVisualTool({
+      name: "visual_list",
+      parameters: listParameters,
+      connection,
+      bind,
+      description:
+        "List a bounded page of stored visuals in this attached conversation. Use the returned cursor for the next page and visual_present with mode open to revisit an ID. Does not search other sessions.",
+    }),
+  );
+  pi.on("session_start", (_event, ctx) => {
+    bind(ctx.sessionManager.getSessionId());
+  });
+  pi.on("session_shutdown", () => {
+    connection.close();
+  });
+  pi.on("context", async (event, ctx) => {
+    if (config === null) return;
+    bind(ctx.sessionManager.getSessionId());
+    let content: string;
+    try {
+      const result = await connection.request({ kind: "context" }, ctx.signal);
+      if (result.kind !== "context")
+        throw new VisualFailure("INVALID_REPLY", "Host returned the wrong visual context kind");
+      if (result.visual === null) return;
+      const visual = result.visual;
+      content = JSON.stringify({
+        source: "untrusted-ui-observation",
+        instruction: false,
+        id: visual.id,
+        revision: visual.revision,
+        stateRevision: visual.stateRevision,
+        state: visual.state,
+        selection: visual.selection,
+        client: visual.client,
+        status: visual.status,
+        error: visual.error,
+      });
+    } catch (error) {
+      if (!(error instanceof VisualFailure)) throw error;
+      content = JSON.stringify({
+        source: "untrusted-ui-observation",
+        instruction: false,
+        status: "unavailable",
+        error: { code: error.code, message: error.message },
+      });
+    }
+    return {
+      messages: [
+        ...event.messages.filter(
+          (message) => message.role !== "custom" || message.customType !== CONTEXT_TYPE,
+        ),
+        {
+          role: "custom",
+          customType: CONTEXT_TYPE,
+          content: `<pi-workspace-context>${content.replace(/</g, "\\u003c")}</pi-workspace-context>`,
+          display: false,
+          timestamp: Date.now(),
+        },
+      ],
+    };
+  });
+}

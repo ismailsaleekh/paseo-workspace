@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import type { VisualService } from "./pi-workspace/service.js";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
 import { MessageReceipts } from "./message-receipts/index.js";
@@ -523,6 +524,7 @@ function requireWebSocketServices(params: {
  * WebSocket server that only accepts sockets + parses/forwards messages to the session layer.
  */
 export class VoiceAssistantWebSocketServer {
+  private readonly piWorkspace: VisualService | undefined;
   private readonly logger: pino.Logger;
   private readonly wss: WebSocketServer;
   private readonly pendingConnections: Map<WebSocketLike, PendingConnection> = new Map();
@@ -660,7 +662,9 @@ export class VoiceAssistantWebSocketServer {
     pluginRuntime?: SessionOptions["pluginRuntime"],
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
+    piWorkspace?: VisualService,
   ) {
+    this.piWorkspace = piWorkspace;
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
@@ -1491,6 +1495,7 @@ export class VoiceAssistantWebSocketServer {
       daemonConfigStore: this.daemonConfigStore,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
+      piWorkspace: this.piWorkspace,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1786,6 +1791,7 @@ export class VoiceAssistantWebSocketServer {
       desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,
       ...(this.serverCapabilities ? { capabilities: this.serverCapabilities } : {}),
       features: {
+        ...(this.piWorkspace ? { piWorkspace: true } : {}),
         ownedSubscriptions: true,
         agentRequestReceipts: true,
         workspaceRequestReceipts: true,
