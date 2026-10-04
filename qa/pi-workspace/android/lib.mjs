@@ -303,9 +303,12 @@ export class Device {
     const value = this.tryShell(["pidof", pkg]);
     return value ? value.split(/\s+/)[0] : null;
   }
+  /** The package's application UID. Android 16 prints `appId=`; older releases print `userId=`. */
   uid(pkg) {
-    const match = this.shell(["dumpsys", "package", pkg]).match(/userId=(\d+)/);
-    return match ? Number(match[1]) : null;
+    const dump = this.shell(["dumpsys", "package", pkg]);
+    const match = dump.match(/^\s*appId=(\d+)/m) ?? dump.match(/^\s*userId=(\d+)/m);
+    if (!match) fail(`no application uid for ${pkg} in dumpsys package output`);
+    return Number(match[1]);
   }
   requestedPermissions(pkg) {
     const dump = this.shell(["dumpsys", "package", pkg]);
