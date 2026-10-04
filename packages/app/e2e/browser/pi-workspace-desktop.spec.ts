@@ -631,7 +631,7 @@ async function checkGuest(run: Run): Promise<VisualFrame> {
   return frame;
 }
 
-async function checkPixels(run: Run, a: VisualFrame): Promise<void> {
+async function checkPixels(run: Run, a: VisualFrame): Promise<string> {
   const first = await repaint(run.app, a.webContentsId);
   const firstCapture = await run.pi.call("visual_inspect", { id: run.shownId, screenshot: true });
   await expectMotif(firstCapture.png, first);
@@ -641,6 +641,20 @@ async function checkPixels(run: Run, a: VisualFrame): Promise<void> {
   const secondCapture = await run.pi.call("visual_inspect", { id: run.shownId, screenshot: true });
   await expectMotif(secondCapture.png, second);
   await expect(expectMotif(firstCapture.png, second)).rejects.toThrow();
+  // The only display so far belongs to window A.
+  return inspected.client;
+}
+
+/**
+ * Trusted input reaches the daemon asynchronously (guest -> desktop main -> app -> daemon), so
+ * the active display switches shortly after the click, not instantly. Wait (bounded) for the
+ * switch before taking an unaddressed screenshot; never accept a display that did not switch.
+ */
+async function waitForActive(run: Run, matches: (client: string) => boolean): Promise<void> {
+  const answered = async () => (await inspect(run.pi, run.shownId)).client;
+  await expect
+    .poll(async () => matches(await answered()), { timeout: 10_000, intervals: [250] })
+    .toBe(true);
 }
 
 async function openSecondWindow(run: Run): Promise<Page> {
@@ -672,14 +686,16 @@ async function openSecondWindow(run: Run): Promise<Page> {
   return opened;
 }
 
-async function checkDisplays(run: Run, a: VisualFrame, b: VisualFrame) {
+async function checkDisplays(run: Run, a: VisualFrame, b: VisualFrame, clientA: string) {
   const motifA = await repaint(run.app, a.webContentsId);
+  await waitForActive(run, (client) => client === clientA);
   const activeA = await run.pi.call("visual_inspect", { id: run.shownId, screenshot: true });
   await expectMotif(activeA.png, motifA);
   const inspectedA = inspectionSchema.parse(activeA.details);
   const activeClients = inspectedA.displays.filter((display) => display.active);
   expect(activeClients.map((display) => display.client)).toEqual([inspectedA.client]);
   const motifB = await repaint(run.app, b.webContentsId);
+  await waitForActive(run, (client) => client !== clientA);
   const activeB = await run.pi.call("visual_inspect", { id: run.shownId, screenshot: true });
   await expectMotif(activeB.png, motifB);
   const inspectedB = inspectionSchema.parse(activeB.details);
@@ -933,12 +949,13 @@ test("desktop V2: isolated guest, actual pixels, displays, egress, hang and rela
       outputPath: (name) => testInfo.outputPath(name),
     };
     const a = await test.step("dedicated isolated guest", () => checkGuest(run));
-    await test.step("actual pixels twice, stale rejected", () => checkPixels(run, a));
+    const clientA = await test.step("actual pixels twice, stale rejected", () =>
+      checkPixels(run, a));
     const windowB = await test.step("second desktop window", () => openSecondWindow(run));
     const b = await isolatedVisual(app, "Client pixel witness", windowB);
     expect(b.webContentsId).not.toBe(a.webContentsId);
     const clients = await test.step("active and addressed displays", () =>
-      checkDisplays(run, a, b));
+      checkDisplays(run, a, b, clientA));
     await test.step("displays converge on stored state", () => checkConvergence(run, a, b));
     await test.step("closed display is never substituted", () =>
       checkClosedDisplay(run, windowB, a, clients));
