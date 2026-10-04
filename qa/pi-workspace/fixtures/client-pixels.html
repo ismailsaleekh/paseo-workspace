@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Client pixel witness</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        background: #ffffff;
+        color: #101020;
+      }
+      button {
+        display: block;
+        min-height: 44px;
+        margin: 12px 0;
+        padding: 8px 12px;
+      }
+      canvas {
+        display: block;
+        width: 256px;
+        height: 128px;
+        image-rendering: pixelated;
+      }
+      output {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="pixels" width="256" height="128" aria-label="Private client pattern"></canvas>
+    <output id="pattern" aria-label="Client pattern code"></output>
+    <p id="value" aria-live="polite">Value: 1</p>
+    <button id="increment" type="button">Increment value</button>
+    <button id="repaint" type="button">Paint a private client pattern</button>
+    <h1>Client pixel witness</h1>
+    <p>This pattern belongs only to this displayed document. It is not in the published state.</p>
+    <script>
+      (() => {
+        const canvas = document.getElementById("pixels");
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Canvas context unavailable");
+        const valueLabel = document.getElementById("value");
+        const patternLabel = document.getElementById("pattern");
+        let value = 1;
+
+        function renderValue() {
+          valueLabel.textContent = `Value: ${value}`;
+        }
+        function paintPrivatePattern() {
+          // The nonce is neither an action parameter nor a state/selection field.
+          // A backend rerender of the source/state cannot reproduce these client pixels.
+          const bytes = crypto.getRandomValues(new Uint8Array(24));
+          context.fillStyle = "#ff00ff";
+          context.fillRect(0, 0, 256, 128);
+          context.fillStyle = "#00ffff";
+          context.fillRect(4, 4, 248, 120);
+          // Black/white endpoints avoid display-profile rounding of arbitrary RGB shades.
+          // Retain all 192 random bits; the observer verifies every cell exactly.
+          for (let index = 0; index < 192; index += 1) {
+            const bit = (bytes[Math.floor(index / 8)] >> (7 - (index % 8))) & 1;
+            context.fillStyle = bit === 1 ? "#ffffff" : "#000000";
+            const x = 8 + (index % 16) * 15;
+            const y = 8 + Math.floor(index / 16) * 9;
+            context.fillRect(x, y, 14, 8);
+          }
+          patternLabel.textContent = Array.from(bytes, (byte) =>
+            byte.toString(16).padStart(2, "0"),
+          ).join("");
+        }
+        function publishValue() {
+          renderValue();
+          window.paseoVisual.publish();
+        }
+        document.getElementById("increment").addEventListener("click", () => {
+          value += 1;
+          publishValue();
+        });
+        document.getElementById("repaint").addEventListener("click", paintPrivatePattern);
+        window.paseoVisual.register({
+          read() {
+            return { state: { value }, selection: null };
+          },
+          restore(snapshot) {
+            if (!snapshot || !snapshot.state || !Number.isInteger(snapshot.state.value)) {
+              throw new Error("Invalid value snapshot");
+            }
+            value = snapshot.state.value;
+            renderValue();
+          },
+          actions: {
+            increment: {
+              description: "Increment the published value without changing private client pixels",
+              parameters: { type: "object", properties: {}, additionalProperties: false },
+              run() {
+                value += 1;
+                renderValue();
+              },
+            },
+          },
+        });
+        renderValue();
+        paintPrivatePattern();
+        // The host sends the initial read() after window.load. Only later local
+        // value changes publish; repaint deliberately never sends the private motif.
+      })();
+    </script>
+  </body>
+</html>

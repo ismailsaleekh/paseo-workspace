@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hang witness</title>
+  </head>
+  <body>
+    <h1>Hang witness</h1>
+    <p id="phase">ready</p>
+    <script>
+      // Judge-owned. The declared action returns before the generated document stops
+      // yielding, so recovery must come from the trusted host rather than this page.
+      (() => {
+        let phase = "ready";
+        window.paseoVisual.register({
+          read() {
+            return { state: { phase }, selection: null };
+          },
+          restore() {},
+          actions: {
+            freeze: {
+              description: "Stop yielding the document event loop shortly after returning",
+              parameters: {
+                type: "object",
+                properties: {},
+                additionalProperties: false,
+              },
+              run() {
+                phase = "freezing";
+                document.getElementById("phase").textContent = phase;
+                setTimeout(() => {
+                  for (;;) {
+                    // Intentionally never yields.
+                  }
+                }, 300);
+              },
+            },
+          },
+        });
+      })();
+    </script>
+  </body>
+</html>
