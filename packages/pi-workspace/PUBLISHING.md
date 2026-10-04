@@ -1,24 +1,28 @@
 # Paired internal artifacts
 
-Status: implementation in progress. No release, installation into a production Pi session, or native-platform readiness is claimed.
+Status: V2-D candidate, not a production release. No installation into the active Pi/Paseo setup or Android readiness is authorized by this document.
 
-This package requires the **Paseo fork's protocol artifact from the same accepted candidate tree**. The new runtime imports are `@getpaseo/protocol/pi-workspace/contracts`. Upstream `@getpaseo/protocol@0.10.3` does not contain those modules. The version string alone is not compatibility evidence.
+## Artifact identity
 
-## Artifact boundary
+Ship the Pi-workspace package with the **fork protocol artifact from the same accepted candidate tree**, and use the desktop/app/daemon implementation from that paired fork. Upstream `@getpaseo/protocol@0.10.3` lacks these feature modules despite sharing the version string. A version number alone is not compatibility evidence.
 
-The Pi package ships `extensions/` and its runtime `src/` files. It must not import server sources, judge fixtures, test helpers, absolute development paths, or files outside its installed dependencies. Pi supplies its SDK, Pi AI and TypeBox as peers. Development dependencies pin SDK 1.0.0 and TypeBox 1.3.27; they are not bundled into the runtime package.
+The Pi package ships `extensions/` and runtime `src/` files. Runtime imports must not reach server source, judge files, test helpers, absolute development paths or undeclared dependencies. Pi supplies SDK, Pi AI and TypeBox peers. Development pins SDK 1.0.0 and TypeBox 1.3.27; runtime Zod remains pinned to 4.4.3. Do not change dependency resolutions as an incidental part of this unit.
 
-The package pins its Zod runtime to 4.4.3, the version used by the fork build. A caret range made a clean offline artifact install select an untested newer tarball; the installed-pair test now also verifies Zod resolution from both artifacts.
+The fork protocol tarball must include compiled `dist/pi-workspace/contracts.js`, declarations and all transitive runtime imports. Desktop additionally needs its compiled guest preload and Electron-flavored app bundle. Browser-only package loading is not desktop delivery evidence.
 
-Protocol is a declared runtime dependency. Its compiled `dist/pi-workspace/contracts.js` and declaration file, plus every transitive protocol runtime import, must be present in the paired protocol tarball. Build and pack that artifact from the accepted fork, not the npm registry's same-numbered upstream release.
+## Required evidence
 
-## Required release evidence
+1. Obtain the V2-D Accepted certificate and supervisor audit of candidate tree, exact diff, protected files and scope. V1 acceptance is not V2 acceptance. Stop at Accepted until the supervisor authorizes Land.
+2. Record the accepted candidate tree and SHA-256 of both tarballs in the release receipt. Build/pack from that tree, not from upstream registry artifacts.
+3. Verify paired contents and install both exact tarballs into one isolated directory with lifecycle scripts and peer auto-installation disabled. Require no workspace symlinks or undeclared source imports.
+4. Execute the installed extension through real Pi, using isolated state and the deterministic provider. A checkout-source load is not this witness.
+5. Require strict typecheck, type-escape audit, unit/SDK/RPC/package/host tests, scoped format/lint, dry pack and the independent V2-D Root, including V1 preservation and actual Electron pixels/containment/lifecycle.
+6. Distribute only identified paired internal artifacts. An independently published package needs a distinct fork protocol identity/version and a separately reviewed packaging change.
 
-1. Obtain the V1 Accepted certificate and supervisor audit before Land; no manual copying into the original checkout.
-2. Record the accepted candidate tree and SHA-256 of both the protocol tarball and Pi-workspace tarball in the release receipt.
-3. Build protocol with its existing build script, then pack both artifacts. Package tests must verify contents and install the pair into an isolated directory, without workspace symlinks or undeclared source imports.
-4. Install both exact tarballs in the same isolated npm operation with scripts disabled and peer auto-installation disabled. Validate the installed protocol leaf and load the installed extension through real Pi. A workspace-source load is not this packaging witness.
-5. Run deterministic source, SDK, RPC, type-safety and host tests plus the independent connected browser oracle. Do not publish until they pass.
-6. Distribute the pair as identified internal artifacts. Do not publish this Pi package with instructions that resolve its protocol dependency from the upstream registry. An independently published release needs a distinct fork protocol identity/version and a separately reviewed packaging change.
+Use the private task cache for offline packaging tests. Never repair the global npm cache or silently substitute an online dependency.
 
-The V1 planning authority does not authorize installation into the user's active setup. V2 platform containment/capture and native delivery, S1 voice, B1 detours, actual-device checks and joint UX acceptance remain separate obligations.
+## Deployment boundary
+
+The desktop certificate covers the isolated checkout runtime tested by the judge. Packaged deployment, reversible installation, existing-profile coexistence and joint operator try-out remain separate checks. Do not replace the installed Paseo app or restart the production daemon as part of certification.
+
+V2-A still requires native Android containment/capture, emulator acceptance and physical HyperOS 3 / Android 16 evidence. S1 speech and B1 native Pi detours remain required. None is closed by desktop pixels, browser screenshots, module compilation or a package manifest.

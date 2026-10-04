@@ -14,6 +14,7 @@ import {
   app,
   autoUpdater as electronAutoUpdater,
   BrowserWindow,
+  WebContentsView,
   ClipboardItem,
   clipboard,
   Menu,
@@ -51,6 +52,7 @@ import {
 } from "./features/notifications.js";
 import { createExternalUrlOpener } from "./features/opener.js";
 import { createBrowserCaptureService } from "./features/browser-capture.js";
+import { PiWorkspaceVisuals, VISUAL_SCHEME } from "./features/pi-workspace-visuals.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { resolveAppIconPath } from "./features/stamped-icon.js";
 import { setupApplicationMenu } from "./features/menu.js";
@@ -120,6 +122,14 @@ const DESKTOP_WINDOW_CHROME_MODE = resolveDesktopWindowChromeMode({
 const UPDATE_QUIT_DEADLINE_MS = 5_000;
 const pendingBrowserWindowOpenRequests = new PendingBrowserWindowOpenRequests();
 const agentNavigationInbox = new AgentNavigationInbox();
+const piWorkspaceVisuals = new PiWorkspaceVisuals({
+  ipc: ipcMain,
+  createSession: (partition) => session.fromPartition(partition, { cache: false }),
+  createView: (webPreferences) => new WebContentsView({ webPreferences }),
+  preloadPath: path.join(__dirname, "features", "pi-workspace-visual-preload.js"),
+  appOrigin: new URL(DEV_SERVER_URL).origin,
+  reportFailure: (error) => log.error("[pi-workspace] visual guest failure", error),
+});
 
 // A second-instance launch can arrive before the packaged protocol handler,
 // IPC handlers, and first window exist. Wait for full bootstrap, not just
@@ -554,6 +564,7 @@ ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown) =>
 );
 
 protocol.registerSchemesAsPrivileged([
+  { scheme: VISUAL_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
   {
     scheme: APP_SCHEME,
     privileges: { standard: true, secure: true, supportFetchAPI: true },
@@ -705,6 +716,7 @@ async function createWindow(
       webviewTag: true,
     },
   });
+  piWorkspaceVisuals.attachWindow(mainWindow);
   applyDesktopWindowChromeMode({ win: mainWindow, mode: DESKTOP_WINDOW_CHROME_MODE });
 
   const webContentsId = mainWindow.webContents.id;

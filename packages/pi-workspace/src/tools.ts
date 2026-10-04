@@ -4,10 +4,17 @@ import { z } from "zod";
 import {
   VisualFailure,
   VisualIdSchema,
+  VisualDisplayIdSchema,
   VisualRevisionSchema,
   VisualResultSchema,
   VISUAL_SOURCE_BYTES,
+  VISUAL_FRAME_BYTES,
+  VISUAL_CAPTURE_DIMENSION,
+  parseVisualSnapshot,
+  parseVisualActions,
   assertVisualJsonBound,
+  type VisualRecord,
+  type VisualScreenshot,
   type VisualOperation,
   type VisualResult,
 } from "@getpaseo/protocol/pi-workspace/contracts";
@@ -44,7 +51,7 @@ export const actParameters = Type.Object(
   objectOptions,
 );
 export const inspectParameters = Type.Object(
-  { id: Type.Optional(Id), screenshot: Type.Optional(Type.Boolean()) },
+  { id: Type.Optional(Id), screenshot: Type.Optional(Type.Boolean()), client: Type.Optional(Id) },
   objectOptions,
 );
 export const listParameters = Type.Object({ cursor: Type.Optional(Id) }, objectOptions);
@@ -70,9 +77,49 @@ const VisualOutput = Type.Object(
       Type.Literal("error"),
     ]),
     client: Type.Union([
+      Id,
       Type.Object({ id: Id, generation: Id, nonce: Id }, objectOptions),
       Type.Null(),
     ]),
+    displays: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            client: Id,
+            platform: Type.Union([
+              Type.Literal("electron"),
+              Type.Literal("android"),
+              Type.Literal("web"),
+              Type.Literal("ios"),
+            ]),
+            active: Type.Boolean(),
+          },
+          objectOptions,
+        ),
+        { maxItems: 64 },
+      ),
+    ),
+    screenshot: Type.Optional(
+      Type.Object(
+        {
+          client: Id,
+          mimeType: Type.Literal("image/png"),
+          width: Type.Integer({ minimum: 1, maximum: VISUAL_CAPTURE_DIMENSION }),
+          height: Type.Integer({ minimum: 1, maximum: VISUAL_CAPTURE_DIMENSION }),
+          viewport: Type.Object(
+            {
+              width: Type.Integer({ minimum: 1, maximum: VISUAL_CAPTURE_DIMENSION }),
+              height: Type.Integer({ minimum: 1, maximum: VISUAL_CAPTURE_DIMENSION }),
+            },
+            objectOptions,
+          ),
+          pixelRatio: Type.Number({ exclusiveMinimum: 0, maximum: 4 }),
+          revision: Revision,
+          stateRevision: Revision,
+        },
+        objectOptions,
+      ),
+    ),
     state: Type.Unknown(),
     selection: Type.Unknown(),
     actions: Type.Record(
@@ -121,12 +168,23 @@ const ActInputSchema = z
   .object({ id: VisualIdSchema, action: z.string().min(1).max(128), value: z.json().optional() })
   .strict();
 const InspectInputSchema = z
-  .object({ id: VisualIdSchema.optional(), screenshot: z.boolean().optional() })
+  .object({
+    id: VisualIdSchema.optional(),
+    screenshot: z.boolean().optional(),
+    client: VisualDisplayIdSchema.optional(),
+  })
   .strict();
 const ListInputSchema = z.object({ cursor: VisualIdSchema.optional() }).strict();
 export type VisualToolDetails =
   | Exclude<VisualResult, { kind: "context" }>
   | { kind: "error"; error: { code: string; message: string }; id: string | null };
+export type VisualPublicDetails =
+  | (Omit<VisualRecord, "capture"> & { screenshot?: VisualScreenshot })
+  | Extract<VisualToolDetails, { kind: "list" | "error" }>;
+type VisualToolResult = Awaited<
+  ReturnType<ToolDefinition<TSchema, VisualPublicDetails>["execute"]>
+>;
+
 export interface ExecuteVisualToolInput {
   name: VisualToolName;
   input: unknown;
@@ -170,7 +228,12 @@ async function operation(input: ExecuteVisualToolInput): Promise<VisualOperation
     }
     case "visual_inspect": {
       const value = InspectInputSchema.parse(input.input);
-      return { kind: "inspect", id: value.id ?? null, screenshot: value.screenshot ?? false };
+      return {
+        kind: "inspect",
+        id: value.id ?? null,
+        screenshot: value.screenshot ?? false,
+        ...(value.client === undefined ? {} : { client: value.client }),
+      };
     }
     case "visual_list": {
       const value = ListInputSchema.parse(input.input);
@@ -185,13 +248,12 @@ export async function executeVisualTool(input: ExecuteVisualToolInput): Promise<
       throw new VisualFailure("CANCELLED", "Visual operation was cancelled");
     const request = await operation(input);
     const received: unknown = await input.connection.request(request, input.signal);
-    assertVisualJsonBound(received, 128 * 1024);
+    assertVisualJsonBound(received, VISUAL_FRAME_BYTES);
     const parsed = VisualResultSchema.safeParse(received);
     if (!parsed.success || parsed.data.kind === "context")
       throw new VisualFailure("INVALID_REPLY", "Visual host returned an invalid tool result");
     const result = parsed.data;
-    if ((input.name === "visual_list") !== (result.kind === "list"))
-      throw new VisualFailure("INVALID_REPLY", "Visual host returned the wrong result kind");
+    validateToolReply(request, result);
     return result;
   } catch (error) {
     if (error instanceof VisualFailure)
@@ -213,6 +275,59 @@ export async function executeVisualTool(input: ExecuteVisualToolInput): Promise<
   }
 }
 
+function validateToolReply(
+  request: VisualOperation,
+  result: Exclude<VisualResult, { kind: "context" }>,
+): void {
+  if ((request.kind === "list") !== (result.kind === "list"))
+    throw new VisualFailure("INVALID_REPLY", "Visual host returned the wrong result kind");
+  if (result.kind !== "visual") return;
+  parseVisualSnapshot({ state: result.state, selection: result.selection });
+  parseVisualActions(result.actions);
+  if (
+    request.kind === "inspect" &&
+    request.client !== undefined &&
+    result.client !== request.client
+  )
+    throw new VisualFailure("INVALID_REPLY", "Visual host answered from a different display");
+  const capture = result.capture;
+  if (!capture) return;
+  const valid =
+    request.kind === "inspect" &&
+    request.screenshot &&
+    capture.binding.id === result.id &&
+    capture.screenshot.client === result.client &&
+    capture.screenshot.revision === result.revision &&
+    capture.screenshot.stateRevision === result.stateRevision;
+  if (!valid)
+    throw new VisualFailure(
+      "INVALID_REPLY",
+      "Capture identity does not match the inspected visual",
+    );
+}
+
+export function visualToolResult(result: VisualToolDetails): VisualToolResult {
+  if (result.kind !== "visual" || !result.capture) {
+    return {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      details: result,
+      structuredContent: z.json().parse(result),
+      isError: result.kind === "error",
+    };
+  }
+  const { capture, ...record } = result;
+  const details: VisualPublicDetails = { ...record, screenshot: capture.screenshot };
+  return {
+    content: [
+      { type: "text", text: JSON.stringify(details) },
+      { type: "image", mimeType: "image/png", data: capture.data },
+    ],
+    details,
+    structuredContent: z.json().parse(details),
+    isError: false,
+  };
+}
+
 export interface VisualToolDefinitionInput<T extends TSchema> {
   name: VisualToolName;
   description: string;
@@ -223,7 +338,7 @@ export interface VisualToolDefinitionInput<T extends TSchema> {
 
 export function createVisualTool<T extends TSchema>(
   input: VisualToolDefinitionInput<T>,
-): ToolDefinition<T, VisualToolDetails, unknown> {
+): ToolDefinition<T, VisualPublicDetails, unknown> {
   return {
     name: input.name,
     label: input.name,
@@ -241,12 +356,7 @@ export function createVisualTool<T extends TSchema>(
         cwd: ctx.cwd,
         connection: input.connection,
       });
-      return {
-        content: [{ type: "text", text: JSON.stringify(details) }],
-        details,
-        structuredContent: details,
-        isError: details.kind === "error",
-      };
+      return visualToolResult(details);
     },
   };
 }

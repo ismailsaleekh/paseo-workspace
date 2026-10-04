@@ -63,6 +63,7 @@ export class VisualSession {
         observation = await service.observe({
           agentId: message.agentId,
           source: owner.source,
+          ...(message.platform === undefined ? {} : { platform: message.platform }),
           emit: (event) =>
             owner.emit({
               type: "pi_workspace.update",

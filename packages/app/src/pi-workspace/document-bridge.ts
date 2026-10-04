@@ -2,8 +2,10 @@ import { z } from "zod";
 import type {
   VisualCommand,
   VisualRenderDocument,
+  VisualHostSignal,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { VisualReceiptSchema } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
+import type { VisualBinding, VisualSnapshot } from "@getpaseo/protocol/pi-workspace/contracts";
 import { withPreviewCsp } from "../file-pane/html-preview-csp";
 
 export const DocumentMessageSchema = z
@@ -11,11 +13,29 @@ export const DocumentMessageSchema = z
   .strict();
 export interface VisualDocumentProps {
   current: VisualRenderDocument;
+  restoration?: VisualRenderDocument | null;
   renderCommandId: string | null;
   command: Exclude<VisualCommand, { kind: "render" }> | null;
   receive(value: unknown): void;
+  hostEvent?(event: VisualHostSignal): void;
   reportError(error: unknown): void;
 }
+export interface VisualStateMessage {
+  type: "paseo-visual-state";
+  binding: VisualBinding;
+  snapshot: VisualSnapshot;
+  stateRevision: number;
+}
+
+export function visualStateMessage(current: VisualRenderDocument): VisualStateMessage {
+  return {
+    type: "paseo-visual-state",
+    binding: current.binding,
+    snapshot: current.document.snapshot,
+    stateRevision: current.document.stateRevision,
+  };
+}
+
 interface BridgeDocumentInput {
   current: VisualRenderDocument;
   commandId: string | null;
@@ -27,6 +47,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
   const configuration = JSON.stringify({
     binding: input.current.binding,
     snapshot: input.current.document.snapshot,
+    stateRevision: input.current.document.stateRevision,
     restore: input.current.document.stateRevision > 1,
     commandId: input.commandId,
     platform: input.platform,
@@ -36,6 +57,10 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
     let registration = null;
     let ready = false;
     let sequence = 0;
+    let stateRevision = config.stateRevision;
+    let restoring = false;
+    let resolveReady;
+    const readiness = new Promise(resolve => { resolveReady = resolve; });
     let operation = Promise.resolve();
     const seen = new Set();
     const empty = {state:null, selection:null};
@@ -47,7 +72,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
         if (!snapshot || !Object.hasOwn(snapshot,'state') || !Object.hasOwn(snapshot,'selection')) throw new Error('read() must return state and selection');
         for (const [name, action] of Object.entries(registration.actions)) actions[name] = {description:action.description, parameters:action.parameters};
       }
-      const receipt = {binding:config.binding, commandId, sequence:++sequence, snapshot, actions, error};
+      const receipt = {binding:config.binding, commandId, sequence:++sequence, stateRevision, snapshot, actions, error};
       const message = JSON.stringify({type:'paseo-visual',receipt});
       if (message.length > 65536) throw new Error('Visual observation exceeds its size limit');
       if (config.platform === 'native') window.ReactNativeWebView.postMessage(message);
@@ -68,7 +93,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
         registration = value;
       },
       publish() {
-        if (!ready) throw new Error('Visual is not ready to publish');
+        if (!ready || restoring) throw new Error('Visual cannot publish before readiness or during restoration');
         try { send(null,null); } catch(error) { fail(null,error); }
       }
     }),writable:false,configurable:false});
@@ -81,19 +106,40 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
         ready = true;
         send(config.commandId,null);
       } catch(error) { fail(config.commandId,error); }
+      finally { resolveReady(); }
     },{once:true});
     window.addEventListener('error',(event) => fail(ready ? null : config.commandId, event.error || event.message));
     window.addEventListener('unhandledrejection',(event) => fail(ready ? null : config.commandId,event.reason));
     window.addEventListener('message',(event) => {
       if (config.platform === 'web' && event.source !== window.parent) return;
       const envelope = event.data;
-      if (!envelope || envelope.type !== 'paseo-visual-command') return;
+      if (!envelope) return;
+      if (envelope.type === 'paseo-visual-state') {
+        const binding = envelope.binding;
+        if (!binding || binding.nonce !== config.binding.nonce || binding.clientGeneration !== config.binding.clientGeneration || binding.id !== config.binding.id || binding.revision !== config.binding.revision) return;
+        operation = operation.then(async () => {
+          await readiness;
+          try {
+            if (!ready) throw new Error('Visual is not ready');
+            if (!Number.isSafeInteger(envelope.stateRevision) || envelope.stateRevision < 1) throw new Error('Invalid stored state revision');
+            if (envelope.stateRevision < stateRevision) return;
+            restoring = true;
+            if (registration) await registration.restore(structuredClone(envelope.snapshot));
+            else if (envelope.snapshot.state !== null || envelope.snapshot.selection !== null) throw new Error('Static document cannot restore nonempty state');
+            stateRevision = envelope.stateRevision;
+          } catch(error) { fail(null,error); }
+          finally { restoring = false; }
+        });
+        return;
+      }
+      if (envelope.type !== 'paseo-visual-command') return;
       const command = envelope.command;
       if (!command || !command.binding || command.binding.nonce !== config.binding.nonce || command.binding.clientGeneration !== config.binding.clientGeneration || command.binding.id !== config.binding.id || command.binding.revision !== config.binding.revision) return;
       if (typeof command.commandId !== 'string' || seen.has(command.commandId)) return;
       if (seen.size >= 4096) { fail(command.commandId,new Error('Document command limit reached; reopen the visual')); return; }
       seen.add(command.commandId);
       operation = operation.then(async () => {
+        await readiness;
         try {
           if (!ready) throw new Error('Visual is not ready');
           if (command.kind === 'act') {

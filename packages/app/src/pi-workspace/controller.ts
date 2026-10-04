@@ -1,8 +1,14 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { assertVisualJsonBound } from "@getpaseo/protocol/pi-workspace/contracts";
+import {
+  assertVisualJsonBound,
+  VISUAL_FRAME_BYTES,
+  type VisualPlatform,
+} from "@getpaseo/protocol/pi-workspace/contracts";
 import {
   decodeVisualEvent,
   decodeVisualView,
+  VisualHostSignalSchema,
+  type VisualHostSignal,
   type VisualCommand,
   type VisualEvent,
   type VisualRenderDocument,
@@ -17,6 +23,7 @@ export type VisualTransport = Pick<
 export interface VisualSurfaceState {
   status: "loading" | "ready" | "error" | "disconnected";
   current: VisualRenderDocument | null;
+  restoration: VisualRenderDocument | null;
   renderCommandId: string | null;
   command: Exclude<VisualCommand, { kind: "render" }> | null;
   error: string | null;
@@ -26,6 +33,7 @@ export class VisualController {
   private state: VisualSurfaceState = {
     status: "loading",
     current: null,
+    restoration: null,
     renderCommandId: null,
     command: null,
     error: null,
@@ -41,6 +49,7 @@ export class VisualController {
   constructor(
     private readonly client: VisualTransport,
     private readonly agentId: string,
+    private readonly platform: VisualPlatform = "web",
   ) {}
 
   getSnapshot = (): VisualSurfaceState => this.state;
@@ -71,6 +80,7 @@ export class VisualController {
         this.update({
           status: "disconnected",
           current: null,
+          restoration: null,
           renderCommandId: null,
           command: null,
           error: "Visual host disconnected; reconnect to restore the saved visual",
@@ -78,7 +88,7 @@ export class VisualController {
       }
     });
     try {
-      const observation = this.client.observePiWorkspace(this.agentId);
+      const observation = this.client.observePiWorkspace(this.agentId, undefined, this.platform);
       this.observation = observation;
       observation.subscribe({
         snapshot: (snapshot) => {
@@ -126,11 +136,25 @@ export class VisualController {
   }
 
   private acceptSnapshot(view: VisualView): void {
+    const current = this.state.current;
+    const next = view.current;
+    const sameDocument =
+      current &&
+      next &&
+      view.generation === this.generation &&
+      current.binding.nonce === next.binding.nonce &&
+      current.binding.id === next.binding.id &&
+      current.binding.revision === next.binding.revision;
     this.generation = view.generation;
     this.sequence = view.sequence;
+    if (sameDocument) {
+      this.update({ ...this.state, restoration: next });
+      return;
+    }
     this.update({
-      status: view.current ? "loading" : "ready",
-      current: view.current,
+      status: next ? "loading" : "ready",
+      current: next,
+      restoration: null,
       renderCommandId: null,
       command: null,
       error: null,
@@ -163,6 +187,7 @@ export class VisualController {
       this.update({
         status: "loading",
         current: command.current,
+        restoration: null,
         renderCommandId: command.commandId,
         command: null,
         error: null,
@@ -177,9 +202,30 @@ export class VisualController {
     }
   }
 
+  hostEvent = (event: VisualHostSignal): void => {
+    try {
+      const signal = VisualHostSignalSchema.parse(event);
+      const current = this.state.current;
+      if (
+        !current ||
+        signal.binding.clientGeneration !== this.generation ||
+        signal.binding.nonce !== current.binding.nonce ||
+        signal.binding.id !== current.binding.id ||
+        signal.binding.revision !== current.binding.revision
+      )
+        throw new Error("Rejected host activity from an obsolete visual");
+      const lifetime = this.lifetime;
+      void this.client.sendPiWorkspaceReceipt(this.agentId, signal).catch((error: unknown) => {
+        if (lifetime === this.lifetime) this.reportError(error);
+      });
+    } catch (error) {
+      this.reportError(error);
+    }
+  };
+
   receive = (value: unknown): void => {
     try {
-      assertVisualJsonBound(value, 128 * 1024);
+      assertVisualJsonBound(value, this.platform === "electron" ? VISUAL_FRAME_BYTES : 128 * 1024);
       const { receipt } = DocumentMessageSchema.parse(value);
       const current = this.state.current;
       if (

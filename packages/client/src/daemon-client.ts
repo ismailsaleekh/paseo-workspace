@@ -1,5 +1,9 @@
 import { subscribeTimeline, type TimelineMessage } from "./timeline-subscription/index.js";
-import type { VisualReceipt, VisualWireView } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
+import type {
+  VisualClientReceipt,
+  VisualWireView,
+} from "@getpaseo/protocol/pi-workspace/rpc-schemas";
+import type { VisualPlatform } from "@getpaseo/protocol/pi-workspace/contracts";
 import { ProviderSnapshotUpdates } from "./provider-snapshots/index.js";
 import {
   ConnectionSubscriptions,
@@ -2492,6 +2496,7 @@ export class DaemonClient {
   observePiWorkspace(
     agentId: string,
     signal?: AbortSignal,
+    platform?: VisualPlatform,
   ): OwnedSubscription<PiWorkspaceSnapshot> {
     let membershipRequested = false;
     return this.owned.observe(
@@ -2505,7 +2510,12 @@ export class DaemonClient {
         const requestId = this.createRequestId();
         return this.sendRequest({
           requestId,
-          message: { type: "pi_workspace.observe.request", requestId, agentId },
+          message: {
+            type: "pi_workspace.observe.request",
+            requestId,
+            agentId,
+            ...(platform === undefined ? {} : { platform }),
+          },
           options: { skipQueue: true },
           select: (message) => {
             if (
@@ -2527,7 +2537,10 @@ export class DaemonClient {
     );
   }
 
-  sendPiWorkspaceReceipt(agentId: string, receipt: VisualReceipt): Promise<PiWorkspaceReceiptAck> {
+  sendPiWorkspaceReceipt(
+    agentId: string,
+    receipt: VisualClientReceipt,
+  ): Promise<PiWorkspaceReceiptAck> {
     return this.sendNamespacedCorrelatedSessionRequest<"pi_workspace.receipt.response">({
       message: { type: "pi_workspace.receipt.request", agentId, receipt },
     });

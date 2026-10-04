@@ -573,7 +573,7 @@ test("present waits for the real display port's receipt and inspect sees locally
   });
 });
 
-test("one authenticated display owns an agent until release; replaced clients cannot publish", async () => {
+test("multiple authenticated displays can observe an agent; replaced clients cannot publish", async () => {
   await withService(async (service) => {
     const first = new Display(service);
     const observation = await service.observe({
@@ -582,10 +582,13 @@ test("one authenticated display owns an agent until release; replaced clients ca
       emit: first.emit,
     });
     const other = new Display(service);
-    await assert.rejects(
-      service.observe({ agentId: owner.agentId, source: other.source, emit: other.emit }),
-      failure("CLIENT_BUSY"),
-    );
+    const concurrent = await service.observe({
+      agentId: owner.agentId,
+      source: other.source,
+      emit: other.emit,
+    });
+    assert.notEqual(concurrent.view.generation, observation.view.generation);
+    concurrent.release();
     const presenting = service.execute(
       owner,
       { kind: "present", title: "Owned display", html: "<p>owned</p>" },
@@ -980,7 +983,7 @@ test("offline presentation retains a recoverable ID, listing survives and captur
     assert.equal((await storage.get({ owner, id: item.id })).html, "<p>saved</p>");
     await assert.rejects(
       service.execute(owner, { kind: "inspect", id: item.id, screenshot: true }, signal),
-      failure("CAPTURE_UNSUPPORTED"),
+      failure("CLIENT_UNAVAILABLE"),
     );
   });
 });

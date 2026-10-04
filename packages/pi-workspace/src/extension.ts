@@ -45,7 +45,7 @@ export default function workspace(pi: ExtensionAPI): void {
       connection,
       bind,
       description:
-        "Invoke one action declared by the live visual, with its JSON value. Inspect first to discover actions. This cannot run arbitrary JavaScript, shell commands, host tools or browser automation.",
+        "Invoke one action declared by the active display of the live visual, with its JSON value. Inspect first to discover actions. This cannot run arbitrary JavaScript, shell commands, host tools or browser automation.",
     }),
   );
   pi.registerTool(
@@ -55,7 +55,7 @@ export default function workspace(pi: ExtensionAPI): void {
       connection,
       bind,
       description:
-        "Inspect the current or specified visual's live state, selection, actions, delivery identity and errors. Screenshot requests fail explicitly when actual-client capture is unsupported or offline; no image is fabricated.",
+        "Inspect the current or specified visual's live state, selection, actions and displays. Omit client to target the active display, or use an opaque client returned by this tool to address that display only. Screenshot requests fail explicitly when actual-client capture is unsupported or unavailable; another client's pixels are never substituted.",
     }),
   );
   pi.registerTool(
@@ -93,6 +93,7 @@ export default function workspace(pi: ExtensionAPI): void {
         state: visual.state,
         selection: visual.selection,
         client: visual.client,
+        displays: visual.displays,
         status: visual.status,
         error: visual.error,
       });

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { Ajv } from "ajv";
 import {
   VisualFailure,
@@ -9,8 +10,10 @@ import {
   type VisualActions,
   type VisualBinding,
   type VisualDocument,
+  type VisualError,
   type VisualOperation,
   type VisualOwner,
+  type VisualPlatform,
   type VisualRecord,
   type VisualResult,
 } from "@getpaseo/protocol/pi-workspace/contracts";
@@ -20,11 +23,24 @@ import type {
   VisualReceipt,
   VisualRenderDocument,
   VisualView,
+  VisualClientReceipt,
+  VisualHostSignal,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { VisualStorage } from "./storage.js";
 
+const CAPTURE_OPERATION_ERRORS = new Set([
+  "DISPLAY_TIMEOUT",
+  "STALE_DOCUMENT",
+  "STALE_STATE",
+  "DISPLAY_UNAVAILABLE",
+  "CAPTURE_FAILED",
+  "INVALID_CAPTURE",
+  "BUSY",
+]);
+
 interface PendingCommand {
   kind: VisualCommand["kind"];
+  capture: boolean;
   resolve(receipt: VisualReceipt): void;
   reject(error: VisualFailure): void;
   cleanup(): void;
@@ -33,6 +49,8 @@ interface VisualPeer {
   agentId: string;
   source: object;
   generation: string;
+  platform: VisualPlatform;
+  mountOrder: number;
   sequence: number;
   documentSequence: number;
   current: VisualRenderDocument | null;
@@ -40,6 +58,7 @@ interface VisualPeer {
   status: VisualRecord["status"];
   error: VisualRecord["error"];
   active: boolean;
+  visible: boolean;
   emit(event: VisualEvent): void;
   pending: Map<string, PendingCommand>;
   tail: Promise<void>;
@@ -48,6 +67,12 @@ interface VisualActionExecution {
   owner: VisualOwner;
   operation: Extract<VisualOperation, { kind: "act" }>;
   signal: AbortSignal;
+}
+interface VisualInspectionExecution {
+  owner: VisualOwner;
+  operation: Extract<VisualOperation, { kind: "inspect" }>;
+  signal: AbortSignal;
+  currentId: string | null;
 }
 interface ValidatedVisualReceipt {
   current: VisualRenderDocument;
@@ -66,6 +91,7 @@ interface Conversation {
 export interface ObserveVisualInput {
   agentId: string;
   source: object;
+  platform?: VisualPlatform;
   emit(event: VisualEvent): void;
 }
 export interface VisualObservation {
@@ -75,7 +101,7 @@ export interface VisualObservation {
 export interface ReceiveVisualInput {
   agentId: string;
   source: object;
-  receipt: VisualReceipt;
+  receipt: VisualClientReceipt;
 }
 
 function sameBinding(left: VisualBinding, right: VisualBinding): boolean {
@@ -105,6 +131,7 @@ export class VisualService {
   private readonly activeOwners = new Map<string, VisualOwner>();
   private readonly peers = new Map<string, VisualPeer>();
   private readonly busy = new Set<string>();
+  private mountOrder = 0;
   private readonly validator = new Ajv({ strict: true, allErrors: false, validateFormats: false });
 
   constructor(
@@ -115,8 +142,7 @@ export class VisualService {
   private conversation(owner: VisualOwner): Conversation {
     const previous = this.activeOwners.get(owner.agentId);
     if (previous && previous.sessionId !== owner.sessionId) {
-      const peer = this.peers.get(owner.agentId);
-      if (peer) this.restore(peer, null);
+      for (const peer of this.agentPeers(owner.agentId)) this.restore(peer, null);
     }
     this.activeOwners.set(owner.agentId, owner);
     const key = conversationKey(owner);
@@ -128,15 +154,16 @@ export class VisualService {
   }
 
   async observe(input: ObserveVisualInput): Promise<VisualObservation> {
-    if (this.peers.has(input.agentId))
-      throw new VisualFailure(
-        "CLIENT_BUSY",
-        "Another app connection currently owns this agent's visual surface",
-      );
+    if (this.agentPeers(input.agentId).length >= 64 || this.peers.size >= 256)
+      throw new VisualFailure("BUSY", "Visual display limit reached");
     const peer: VisualPeer = {
       agentId: input.agentId,
       source: input.source,
       generation: randomUUID(),
+      // COMPAT(visualPlatform): added in v0.10.3; remove after 2027-04-04 once
+      // all app clients declare their display platform. V1 observes the web surface.
+      platform: input.platform ?? "web",
+      mountOrder: ++this.mountOrder,
       sequence: 0,
       documentSequence: 0,
       current: null,
@@ -144,11 +171,12 @@ export class VisualService {
       status: "stored",
       error: null,
       active: true,
+      visible: true,
       emit: input.emit,
       pending: new Map(),
       tail: Promise.resolve(),
     };
-    this.peers.set(input.agentId, peer);
+    this.peers.set(peer.generation, peer);
     try {
       const owner = this.activeOwners.get(input.agentId);
       const conversation = owner ? this.conversations.get(conversationKey(owner)) : undefined;
@@ -188,7 +216,33 @@ export class VisualService {
       );
     }
     peer.pending.clear();
-    if (this.peers.get(peer.agentId) === peer) this.peers.delete(peer.agentId);
+    this.peers.delete(peer.generation);
+  }
+
+  private agentPeers(agentId: string): VisualPeer[] {
+    return [...this.peers.values()].filter((peer) => peer.active && peer.agentId === agentId);
+  }
+
+  private latestPeer(agentId: string, id?: string): VisualPeer | undefined {
+    let latest: VisualPeer | undefined;
+    for (const peer of this.agentPeers(agentId)) {
+      if (!peer.visible) continue;
+      if (id !== undefined && peer.current?.document.id !== id) continue;
+      if (!latest || peer.mountOrder > latest.mountOrder) latest = peer;
+    }
+    return latest;
+  }
+
+  private synchronize(owner: VisualOwner, document: VisualDocument): void {
+    for (const peer of this.agentPeers(owner.agentId)) {
+      const current = peer.current;
+      if (!current || current.document.id !== document.id) continue;
+      if (current.document.revision !== document.revision) continue;
+      peer.current = { binding: current.binding, document };
+      if (peer.error?.code === "DOCUMENT_UNRESPONSIVE") continue;
+      peer.sequence += 1;
+      peer.emit({ kind: "snapshot", view: this.view(peer) });
+    }
   }
 
   private view(peer: VisualPeer): VisualView {
@@ -219,19 +273,43 @@ export class VisualService {
     peer.documentSequence = 0;
     peer.actions = {};
     peer.status = "stored";
+    peer.error = null;
     peer.sequence += 1;
     if (peer.active) peer.emit({ kind: "snapshot", view: this.view(peer) });
   }
 
   private requirePeer(owner: VisualOwner, id: string): VisualPeer {
-    const peer = this.peers.get(owner.agentId);
-    if (!peer?.active)
+    const peer = this.latestPeer(owner.agentId);
+    if (!peer)
       throw new VisualFailure(
         "CLIENT_UNAVAILABLE",
         "No app is displaying this conversation's visual surface",
         id,
       );
     return peer;
+  }
+
+  private displayedPeer(owner: VisualOwner, id: string, client?: string): VisualPeer {
+    if (client !== undefined) {
+      const addressed = this.peers.get(client);
+      const available =
+        addressed &&
+        addressed.active &&
+        addressed.visible &&
+        addressed.agentId === owner.agentId &&
+        addressed.current?.document.id === id;
+      if (!available)
+        throw new VisualFailure(
+          "DISPLAY_UNAVAILABLE",
+          "Addressed display is not showing this visual",
+          id,
+        );
+      return addressed;
+    }
+    const active = this.latestPeer(owner.agentId, id);
+    if (active) return active;
+    this.requirePeer(owner, id);
+    throw new VisualFailure("NOT_DISPLAYED", "Open this visual before live inspection", id);
   }
 
   async execute(
@@ -241,8 +319,8 @@ export class VisualService {
   ): Promise<VisualResult> {
     checkCancellation(signal);
     const conversation = this.conversation(owner);
-    const peer = this.peers.get(owner.agentId);
-    if (peer) await peer.tail;
+    await Promise.all(this.agentPeers(owner.agentId).map((peer) => peer.tail));
+    const peer = this.latestPeer(owner.agentId);
     checkCancellation(signal);
     if (operation.kind === "list") {
       const page = await this.storage.list({
@@ -300,28 +378,13 @@ export class VisualService {
           conversation.currentId = document.id;
           return this.record(owner, document.id);
         }
-        case "inspect": {
-          const id = operation.id ?? conversation.currentId;
-          if (!id)
-            throw new VisualFailure("NO_CURRENT_VISUAL", "This conversation has no current visual");
-          await this.storage.get({ owner, id });
-          if (operation.screenshot)
-            throw new VisualFailure(
-              "CAPTURE_UNSUPPORTED",
-              "V1 does not provide actual-client pixel capture",
-              id,
-            );
-          const target = this.requirePeer(owner, id);
-          const current = target.current;
-          if (!current || current.document.id !== id || target.status !== "rendered")
-            throw new VisualFailure("NOT_DISPLAYED", "Open this visual before live inspection", id);
-          await this.command(
-            target,
-            { kind: "inspect", commandId: randomUUID(), binding: current.binding },
+        case "inspect":
+          return await this.inspect({
+            owner,
+            operation,
             signal,
-          );
-          return this.record(owner, id);
-        }
+            currentId: conversation.currentId,
+          });
         case "act":
           return await this.act({ owner, operation, signal });
       }
@@ -330,9 +393,66 @@ export class VisualService {
     }
   }
 
+  private async inspect({
+    owner,
+    operation,
+    signal,
+    currentId,
+  }: VisualInspectionExecution): Promise<VisualRecord> {
+    const id = operation.id ?? currentId;
+    if (!id)
+      throw new VisualFailure("NO_CURRENT_VISUAL", "This conversation has no current visual");
+    await this.storage.get({ owner, id });
+    const target = this.displayedPeer(owner, id, operation.client);
+    this.requireResponsive(target, id);
+    const current = target.current;
+    if (!current || target.status !== "rendered")
+      throw new VisualFailure("NOT_DISPLAYED", "Open this visual before live inspection", id);
+    if (operation.screenshot && target.platform !== "electron")
+      throw new VisualFailure(
+        "CAPTURE_UNSUPPORTED",
+        "This display does not provide actual-client pixel capture",
+        id,
+      );
+    const receipt = await this.command(
+      target,
+      {
+        kind: "inspect",
+        commandId: randomUUID(),
+        binding: current.binding,
+        ...(operation.screenshot
+          ? { screenshot: true, stateRevision: current.document.stateRevision }
+          : {}),
+      },
+      signal,
+    );
+    if (
+      !target.active ||
+      !target.visible ||
+      !target.current ||
+      !sameBinding(target.current.binding, current.binding)
+    )
+      throw new VisualFailure("DISPLAY_UNAVAILABLE", "Display changed during inspection", id);
+    const record = await this.record(owner, id, target.generation);
+    const capture = receipt.capture;
+    if (!capture) return record;
+    if (
+      record.revision !== capture.screenshot.revision ||
+      record.stateRevision !== capture.screenshot.stateRevision
+    )
+      throw new VisualFailure("STALE_STATE", "Stored state changed during capture", id);
+    return { ...record, capture };
+  }
+
+  private requireResponsive(peer: VisualPeer, id: string): void {
+    if (peer.error?.code === "DOCUMENT_UNRESPONSIVE")
+      throw new VisualFailure("DOCUMENT_UNRESPONSIVE", "Reopen the terminated visual document", id);
+  }
+
   private async act({ owner, operation, signal }: VisualActionExecution): Promise<VisualRecord> {
     await this.storage.get({ owner, id: operation.id });
-    const target = this.requirePeer(owner, operation.id);
+    const target = this.displayedPeer(owner, operation.id);
+    this.requireResponsive(target, operation.id);
     const current = target.current;
     if (!current || current.document.id !== operation.id || target.status !== "rendered") {
       throw new VisualFailure(
@@ -371,7 +491,10 @@ export class VisualService {
         signal,
       );
     } catch (error) {
-      this.restore(target, await this.storage.get({ owner, id: operation.id }));
+      const retained =
+        error instanceof VisualFailure &&
+        (error.code === "DOCUMENT_UNRESPONSIVE" || error.code === "STALE_STATE");
+      if (!retained) this.restore(target, await this.storage.get({ owner, id: operation.id }));
       throw error;
     }
     return this.record(owner, operation.id);
@@ -390,6 +513,7 @@ export class VisualService {
     peer.documentSequence = 0;
     peer.status = "stored";
     peer.actions = {};
+    peer.error = null;
     try {
       const receipt = await this.command(
         peer,
@@ -423,6 +547,11 @@ export class VisualService {
       peer.actions = receipt.actions;
       peer.status = "rendered";
       peer.error = null;
+      peer.mountOrder = ++this.mountOrder;
+      this.synchronize(owner, updated);
+      for (const other of this.agentPeers(owner.agentId)) {
+        if (other !== peer) this.restore(other, updated);
+      }
     } catch (error) {
       this.restore(peer, previous);
       if (error instanceof VisualFailure)
@@ -458,7 +587,13 @@ export class VisualService {
         cancelDeadline();
         signal.removeEventListener("abort", abort);
       };
-      peer.pending.set(command.commandId, { kind: command.kind, resolve, reject, cleanup });
+      peer.pending.set(command.commandId, {
+        kind: command.kind,
+        capture: command.kind === "inspect" && command.screenshot === true,
+        resolve,
+        reject,
+        cleanup,
+      });
       signal.addEventListener("abort", abort, { once: true });
       peer.sequence += 1;
       try {
@@ -472,11 +607,19 @@ export class VisualService {
   }
 
   async receive(input: ReceiveVisualInput): Promise<number> {
-    const peer = this.peers.get(input.agentId);
-    if (!peer?.active || peer.source !== input.source)
+    const peer = this.peers.get(input.receipt.binding.clientGeneration);
+    if (!peer?.active || peer.agentId !== input.agentId || peer.source !== input.source)
       throw new VisualFailure(
         "STALE_CLIENT",
         "Visual receipt does not belong to this authenticated connection",
+      );
+    const receipt = input.receipt;
+    if ("kind" in receipt) return this.receiveHostSignal(peer, receipt);
+    if (!peer.visible)
+      throw new VisualFailure(
+        "DISPLAY_UNAVAILABLE",
+        "Hidden display cannot publish visual state",
+        receipt.binding.id,
       );
     const previous = peer.tail;
     let release: () => void = () => {
@@ -487,37 +630,15 @@ export class VisualService {
     });
     await previous;
     try {
-      const receipt = input.receipt;
-      const { current, snapshot, actions, pending } = this.validateReceipt({ peer, receipt });
+      this.requireResponsive(peer, receipt.binding.id);
+      const validated = this.validateReceipt({ peer, receipt });
+      const { current, snapshot, actions, pending } = validated;
       peer.documentSequence = receipt.sequence;
       if (receipt.error) {
-        peer.error = receipt.error;
-        peer.status = "error";
-        if (pending && receipt.commandId) {
-          peer.pending.delete(receipt.commandId);
-          pending.cleanup();
-          pending.reject(
-            new VisualFailure(receipt.error.code, receipt.error.message, current.document.id),
-          );
-        }
+        this.rejectReceipt({ peer, receipt }, receipt.error, pending);
         return current.document.stateRevision;
       }
-      if (pending?.kind !== "render") {
-        const owner = this.activeOwners.get(input.agentId);
-        if (!owner) throw new VisualFailure("STALE_SESSION", "No Pi session owns this visual");
-        const saved = await this.storage.get({ owner, id: current.document.id });
-        const updated = await this.storage.saveState({
-          owner,
-          id: saved.id,
-          revision: current.document.revision,
-          stateRevision: saved.stateRevision,
-          snapshot,
-        });
-        peer.current = { binding: current.binding, document: updated };
-        peer.actions = actions;
-        peer.status = "rendered";
-        peer.error = null;
-      }
+      if (pending?.kind !== "render") await this.publishReceipt({ peer, receipt }, validated);
       if (pending && receipt.commandId) {
         peer.pending.delete(receipt.commandId);
         pending.cleanup();
@@ -530,8 +651,130 @@ export class VisualService {
         );
       }
       return peer.current.document.stateRevision;
+    } catch (error) {
+      await this.receiptFailure({ peer, receipt }, error);
+      throw error;
     } finally {
       release();
+    }
+  }
+
+  private rejectReceipt(
+    { peer, receipt }: ReceiptValidationInput,
+    error: VisualError,
+    pending: PendingCommand | undefined,
+  ): void {
+    const captureFailure = pending?.capture && CAPTURE_OPERATION_ERRORS.has(error.code);
+    if (!captureFailure) {
+      peer.error = error;
+      peer.status = "error";
+    }
+    if (pending && receipt.commandId) {
+      peer.pending.delete(receipt.commandId);
+      pending.cleanup();
+      pending.reject(new VisualFailure(error.code, error.message, receipt.binding.id));
+    }
+  }
+
+  private receiveHostSignal(peer: VisualPeer, signal: VisualHostSignal): number {
+    const current = peer.current;
+    if (!current || !sameBinding(current.binding, signal.binding))
+      throw new VisualFailure("STALE_DOCUMENT", "Host event belongs to a replaced visual");
+    if (peer.platform !== "electron")
+      throw new VisualFailure(
+        "UNSUPPORTED_CLIENT",
+        "This display has no trusted desktop event channel",
+      );
+    if (signal.kind === "visibility") {
+      peer.visible = signal.visible;
+      if (!peer.visible) {
+        for (const pending of peer.pending.values()) {
+          pending.cleanup();
+          pending.reject(
+            new VisualFailure(
+              "DISPLAY_UNAVAILABLE",
+              "Visual display was hidden",
+              current.document.id,
+            ),
+          );
+        }
+        peer.pending.clear();
+      }
+    } else {
+      if (!peer.visible)
+        throw new VisualFailure("DISPLAY_UNAVAILABLE", "Hidden display cannot claim activity");
+      this.requireResponsive(peer, current.document.id);
+      peer.mountOrder = ++this.mountOrder;
+    }
+    return current.document.stateRevision;
+  }
+
+  private async receiptFailure(input: ReceiptValidationInput, error: unknown): Promise<void> {
+    if (!(error instanceof VisualFailure)) return;
+    if (error.code === "STALE_STATE") await this.recoverStaleState(input, error);
+    if (error.code === "INVALID_CAPTURE" && input.receipt.commandId) {
+      const pending = input.peer.pending.get(input.receipt.commandId);
+      if (pending) {
+        input.peer.pending.delete(input.receipt.commandId);
+        pending.cleanup();
+        pending.reject(error);
+      }
+    }
+  }
+
+  private async publishReceipt(
+    { peer, receipt }: ReceiptValidationInput,
+    { current, snapshot, actions }: ValidatedVisualReceipt,
+  ): Promise<void> {
+    const owner = this.activeOwners.get(peer.agentId);
+    if (!owner) throw new VisualFailure("STALE_SESSION", "No Pi session owns this visual");
+    if (receipt.capture) {
+      const stored = await this.storage.get({ owner, id: current.document.id });
+      if (
+        stored.stateRevision !== receipt.capture.screenshot.stateRevision ||
+        !isDeepStrictEqual(stored.snapshot, snapshot)
+      )
+        throw new VisualFailure(
+          "STALE_STATE",
+          "Capture did not observe the authoritative stored state",
+        );
+      peer.actions = actions;
+      return;
+    }
+    // COMPAT(visualStateBase): added in v0.10.3; remove after 2027-04-04 once all
+    // visual clients publish an explicit base. V1 receipts use their bound view's base.
+    const stateRevision = receipt.stateRevision ?? current.document.stateRevision;
+    const updated = await this.storage.saveState({
+      owner,
+      id: current.document.id,
+      revision: current.document.revision,
+      stateRevision,
+      snapshot,
+    });
+    // Activity order is fixed at observation, render or trusted interaction. A late mount
+    // receipt must not displace a display the user interacted with in the meantime.
+    peer.current = { binding: current.binding, document: updated };
+    peer.actions = actions;
+    peer.status = "rendered";
+    peer.error = null;
+    this.synchronize(owner, updated);
+  }
+
+  private async recoverStaleState(
+    { peer, receipt }: ReceiptValidationInput,
+    error: VisualFailure,
+  ): Promise<void> {
+    const pending = receipt.commandId ? peer.pending.get(receipt.commandId) : undefined;
+    if (pending && receipt.commandId) {
+      peer.pending.delete(receipt.commandId);
+      pending.cleanup();
+      pending.reject(error);
+    }
+    const owner = this.activeOwners.get(peer.agentId);
+    const current = peer.current;
+    if (owner && current && sameBinding(current.binding, receipt.binding)) {
+      const stored = await this.storage.get({ owner, id: current.document.id });
+      this.synchronize(owner, stored);
     }
   }
 
@@ -558,12 +801,42 @@ export class VisualService {
     const pending = receipt.commandId ? peer.pending.get(receipt.commandId) : undefined;
     if (receipt.commandId && !pending)
       throw new VisualFailure("STALE_COMMAND", "Visual command is no longer pending");
+    this.validateCapture({ peer, receipt }, current, pending);
     return { current, snapshot, actions, pending };
   }
 
-  private async record(owner: VisualOwner, id: string): Promise<VisualRecord> {
+  private validateCapture(
+    input: ReceiptValidationInput,
+    current: VisualRenderDocument,
+    pending: PendingCommand | undefined,
+  ): void {
+    const capture = input.receipt.capture;
+    if (input.receipt.error) return;
+    if (!capture) {
+      if (pending?.capture)
+        throw new VisualFailure("INVALID_CAPTURE", "Requested capture is missing");
+      return;
+    }
+    const valid =
+      pending?.capture &&
+      input.peer.platform === "electron" &&
+      input.peer.visible &&
+      capture.operationId === input.receipt.commandId &&
+      sameBinding(capture.binding, current.binding) &&
+      capture.screenshot.client === input.peer.generation &&
+      capture.screenshot.revision === current.document.revision &&
+      capture.screenshot.stateRevision === input.receipt.stateRevision;
+    if (!valid)
+      throw new VisualFailure(
+        "INVALID_CAPTURE",
+        "Capture does not match the pending display operation",
+      );
+  }
+
+  private async record(owner: VisualOwner, id: string, client?: string): Promise<VisualRecord> {
     const document = await this.storage.get({ owner, id });
-    const peer = this.peers.get(owner.agentId);
+    const active = this.latestPeer(owner.agentId, id);
+    const peer = client === undefined ? active : this.displayedPeer(owner, id, client);
     const current = peer?.current;
     const live =
       peer &&
@@ -581,9 +854,14 @@ export class VisualService {
       status: live ? peer.status : "disconnected",
       actions: live ? peer.actions : {},
       error: live ? peer.error : null,
-      client: live
-        ? { id: peer.generation, generation: peer.generation, nonce: current.binding.nonce }
-        : null,
+      client: live ? peer.generation : null,
+      displays: this.agentPeers(owner.agentId)
+        .filter((display) => display.visible && display.current?.document.id === id)
+        .map((display) => ({
+          client: display.generation,
+          platform: display.platform,
+          active: display === active,
+        })),
     };
   }
 }

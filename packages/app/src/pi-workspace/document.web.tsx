@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { visualDocumentHtml, type VisualDocumentProps } from "./document-bridge";
+import {
+  visualDocumentHtml,
+  visualStateMessage,
+  type VisualDocumentProps,
+} from "./document-bridge";
 
 const frameStyle = {
   width: "100%",
@@ -11,6 +15,7 @@ const frameStyle = {
 
 export function VisualDocument({
   current,
+  restoration,
   renderCommandId,
   command,
   receive,
@@ -29,6 +34,15 @@ export function VisualDocument({
     window.addEventListener("message", message);
     return () => window.removeEventListener("message", message);
   }, [receive]);
+  useEffect(() => {
+    if (!restoration) return;
+    const target = frame.current?.contentWindow;
+    if (!target) {
+      reportError(new Error("Visual document is not mounted for restoration"));
+      return;
+    }
+    target.postMessage(visualStateMessage(restoration), "*");
+  }, [restoration, reportError]);
   useEffect(() => {
     if (!command) return;
     const target = frame.current?.contentWindow;

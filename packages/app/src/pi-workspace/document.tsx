@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { htmlPreviewNavigationKind } from "../file-pane/html-preview-navigation";
-import { visualDocumentHtml, type VisualDocumentProps } from "./document-bridge";
+import {
+  visualDocumentHtml,
+  visualStateMessage,
+  type VisualDocumentProps,
+} from "./document-bridge";
 
 const whitelist = ["*"];
 const style = { flex: 1, minHeight: 280, backgroundColor: "white" } as const;
 
 export function VisualDocument({
   current,
+  restoration,
   renderCommandId,
   command,
   receive,
@@ -41,6 +46,17 @@ export function VisualDocument({
     },
     [receive, reportError],
   );
+  useEffect(() => {
+    if (!restoration) return;
+    if (!webview.current) {
+      reportError(new Error("Visual document is not mounted for restoration"));
+      return;
+    }
+    const data = JSON.stringify(visualStateMessage(restoration)).replace(/</g, "\\u003c");
+    webview.current.injectJavaScript(
+      `window.dispatchEvent(new MessageEvent('message',{data:${data}}));true;`,
+    );
+  }, [restoration, reportError]);
   useEffect(() => {
     if (!command) return;
     if (!webview.current) {

@@ -7,6 +7,8 @@ export const VISUAL_JSON_DEPTH = 16;
 export const VISUAL_ACTION_LIMIT = 64;
 export const VISUAL_OPERATION_TIMEOUT_MS = 15_000;
 export const VISUAL_PROTOCOL_VERSION = 1;
+export const VISUAL_CAPTURE_BYTES = 2 * 1024 * 1024;
+export const VISUAL_CAPTURE_DIMENSION = 4096;
 
 export const VisualIdSchema = z.string().uuid();
 export const VisualRevisionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -62,6 +64,49 @@ export const VisualClientSchema = z
     nonce: z.string().uuid(),
   })
   .strict();
+export const VisualDisplayIdSchema = z.string().min(1).max(256);
+export const VisualPlatformSchema = z.enum(["electron", "android", "web", "ios"]);
+export const VisualDisplaySchema = z
+  .object({
+    client: VisualDisplayIdSchema,
+    platform: VisualPlatformSchema,
+    active: z.boolean(),
+  })
+  .strict();
+export type VisualPlatform = z.infer<typeof VisualPlatformSchema>;
+
+export const VisualScreenshotSchema = z
+  .object({
+    client: VisualDisplayIdSchema,
+    mimeType: z.literal("image/png"),
+    width: z.number().int().positive().max(VISUAL_CAPTURE_DIMENSION),
+    height: z.number().int().positive().max(VISUAL_CAPTURE_DIMENSION),
+    viewport: z
+      .object({
+        width: z.number().int().positive().max(VISUAL_CAPTURE_DIMENSION),
+        height: z.number().int().positive().max(VISUAL_CAPTURE_DIMENSION),
+      })
+      .strict(),
+    pixelRatio: z.number().positive().max(4),
+    revision: VisualRevisionSchema,
+    stateRevision: VisualRevisionSchema,
+  })
+  .strict();
+export const VisualCaptureSchema = z
+  .object({
+    operationId: z.string().uuid(),
+    binding: VisualBindingSchema,
+    screenshot: VisualScreenshotSchema,
+    data: z
+      .string()
+      .min(4)
+      .max(Math.ceil(VISUAL_CAPTURE_BYTES / 3) * 4)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  })
+  .strict();
+export type VisualScreenshot = z.infer<typeof VisualScreenshotSchema>;
+export type VisualCapture = z.infer<typeof VisualCaptureSchema>;
+
 export const VisualRecordSchema = z
   .object({
     kind: z.literal("visual"),
@@ -70,7 +115,9 @@ export const VisualRecordSchema = z
     revision: VisualRevisionSchema,
     stateRevision: VisualRevisionSchema,
     status: VisualDeliveryStatusSchema,
-    client: VisualClientSchema.nullable(),
+    client: z.union([VisualDisplayIdSchema, VisualClientSchema]).nullable(),
+    displays: z.array(VisualDisplaySchema).max(64).optional(),
+    capture: VisualCaptureSchema.optional(),
     state: z.json(),
     selection: z.json(),
     actions: VisualActionsSchema,
@@ -132,7 +179,12 @@ export const VisualOperationSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
   z
-    .object({ kind: z.literal("inspect"), id: VisualIdSchema.nullable(), screenshot: z.boolean() })
+    .object({
+      kind: z.literal("inspect"),
+      id: VisualIdSchema.nullable(),
+      screenshot: z.boolean(),
+      client: VisualDisplayIdSchema.optional(),
+    })
     .strict(),
   z.object({ kind: z.literal("list"), cursor: VisualIdSchema.nullable() }).strict(),
   z.object({ kind: z.literal("context") }).strict(),

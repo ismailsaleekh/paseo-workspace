@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { BrowserKeyboardPolicy } from "./features/browser-keyboard/index.js";
 import type { DesktopWindowChromeMode } from "./window/chrome.js";
+import type { DesktopVisualBridge } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 
 // This preload runs in Electron's sandbox and is tsc-compiled (not bundled), so it MUST
 // NOT emit any runtime module load other than "electron" — a require() of a local or
@@ -29,7 +30,26 @@ interface AttachedBrowserRegistration {
   webContentsId: number;
 }
 
+const visuals: DesktopVisualBridge = {
+  async mount(input) {
+    await ipcRenderer.invoke("paseo:visual:mount", input);
+  },
+  async bounds(input) {
+    await ipcRenderer.invoke("paseo:visual:bounds", input);
+  },
+  async command(input) {
+    await ipcRenderer.invoke("paseo:visual:command", input);
+  },
+  async restore(input) {
+    await ipcRenderer.invoke("paseo:visual:restore", input);
+  },
+  async dispose(input) {
+    await ipcRenderer.invoke("paseo:visual:dispose", input);
+  },
+};
+
 contextBridge.exposeInMainWorld("paseoDesktop", {
+  visuals,
   platform: process.platform,
   windowChromeMode: readWindowChromeMode(),
   invoke: (command: string, args?: Record<string, unknown>) =>

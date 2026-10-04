@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
-import { Text, View } from "react-native";
+import { Platform, Text, View } from "react-native";
+import { getIsElectron } from "@/constants/platform";
+import type { VisualPlatform } from "@getpaseo/protocol/pi-workspace/contracts";
 import { StyleSheet } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
@@ -23,9 +25,18 @@ export function VisualHost({ serverId, agentId }: VisualHostProps) {
   return <ConnectedVisualHost client={client} agentId={agentId} />;
 }
 
+function visualPlatform(): VisualPlatform {
+  if (Platform.OS === "web") return getIsElectron() ? "electron" : "web";
+  if (Platform.OS === "android" || Platform.OS === "ios") return Platform.OS;
+  throw new Error("Pi visual workspace is unavailable on this platform");
+}
+
 function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
   const active = useRetainedPanelActive();
-  const controller = useMemo(() => new VisualController(client, agentId), [client, agentId]);
+  const controller = useMemo(
+    () => new VisualController(client, agentId, visualPlatform()),
+    [client, agentId],
+  );
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
@@ -74,9 +85,11 @@ function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
         <VisualDocument
           key={state.current.binding.nonce}
           current={state.current}
+          restoration={state.restoration}
           renderCommandId={state.renderCommandId}
           command={state.command}
           receive={controller.receive}
+          hostEvent={controller.hostEvent}
           reportError={reportError}
         />
       ) : null}

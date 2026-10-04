@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import type { DesktopVisualBridge } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { getElectronHost } from "@/desktop/electron/host";
 import type { BrowserKeyboardPolicy } from "@/desktop/browser/shortcuts";
 import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/protocol/messages";
@@ -187,6 +188,7 @@ export interface DesktopHostBridge {
   webUtils?: DesktopWebUtilsBridge;
   menu?: DesktopMenuBridge;
   browser?: DesktopBrowserBridge;
+  visuals?: DesktopVisualBridge;
 }
 
 declare global {

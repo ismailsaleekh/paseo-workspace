@@ -5,6 +5,9 @@ import {
   VisualDocumentSchema,
   VisualErrorSchema,
   VisualSnapshotSchema,
+  VisualRevisionSchema,
+  VisualPlatformSchema,
+  VisualCaptureSchema,
   VisualFailure,
   VISUAL_SNAPSHOT_BYTES,
   assertVisualJsonBound,
@@ -37,6 +40,8 @@ export const VisualCommandSchema = z.discriminatedUnion("kind", [
       kind: z.literal("inspect"),
       commandId: z.string().uuid(),
       binding: VisualBindingSchema,
+      screenshot: z.boolean().optional(),
+      stateRevision: VisualRevisionSchema.optional(),
     })
     .strict(),
   z
@@ -64,11 +69,26 @@ export const VisualReceiptSchema = z
     binding: VisualBindingSchema,
     commandId: z.string().uuid().nullable(),
     sequence: z.number().int().positive(),
+    stateRevision: VisualRevisionSchema.optional(),
     snapshot: VisualSnapshotSchema,
     actions: VisualActionsSchema,
     error: VisualErrorSchema.nullable(),
+    capture: VisualCaptureSchema.optional(),
   })
   .strict();
+export const VisualHostSignalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("activity"), binding: VisualBindingSchema }).strict(),
+  z
+    .object({ kind: z.literal("visibility"), binding: VisualBindingSchema, visible: z.boolean() })
+    .strict(),
+]);
+export const VisualClientReceiptSchema = z.union([VisualReceiptSchema, VisualHostSignalSchema]);
+export const DesktopVisualEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("paseo-visual"), receipt: VisualReceiptSchema }).strict(),
+  z.object({ type: z.literal("paseo-visual-host"), event: VisualHostSignalSchema }).strict(),
+]);
+export type VisualHostSignal = z.infer<typeof VisualHostSignalSchema>;
+export type VisualClientReceipt = z.infer<typeof VisualClientReceiptSchema>;
 
 // zod-aot 0.20.4 rejects recursive JSON objects in outbound action/state leaves.
 // The generated transport validator checks bounded text; the consumer decodes and
@@ -96,6 +116,8 @@ const WireCommandSchema = z.discriminatedUnion("kind", [
       kind: z.literal("inspect"),
       commandId: z.string().uuid(),
       binding: VisualBindingSchema,
+      screenshot: z.boolean().optional(),
+      stateRevision: VisualRevisionSchema.optional(),
     })
     .strict(),
   z
@@ -123,6 +145,7 @@ export const VisualSubscribeRequestSchema = z.object({
   type: z.literal("pi_workspace.observe.request"),
   requestId: z.string(),
   agentId: z.string().min(1).max(256),
+  platform: VisualPlatformSchema.optional(),
 });
 export const VisualSubscribeResponseSchema = z.object({
   type: z.literal("pi_workspace.observe.response"),
@@ -145,7 +168,7 @@ export const VisualReceiptRequestSchema = z.object({
   type: z.literal("pi_workspace.receipt.request"),
   requestId: z.string(),
   agentId: z.string().min(1).max(256),
-  receipt: VisualReceiptSchema,
+  receipt: VisualClientReceiptSchema,
 });
 export const VisualReceiptResponseSchema = z.object({
   type: z.literal("pi_workspace.receipt.response"),
@@ -155,6 +178,48 @@ export const VisualReceiptResponseSchema = z.object({
     stateRevision: z.number().int().positive(),
   }),
 });
+
+export const DesktopVisualBoundsSchema = z
+  .object({
+    x: z.number().int().min(-131072).max(131072),
+    y: z.number().int().min(-131072).max(131072),
+    width: z.number().int().nonnegative().max(8192),
+    height: z.number().int().nonnegative().max(8192),
+  })
+  .strict();
+export const DesktopVisualMountSchema = z
+  .object({
+    current: VisualRenderDocumentSchema,
+    commandId: z.string().uuid().nullable(),
+    bounds: DesktopVisualBoundsSchema,
+  })
+  .strict();
+export const DesktopVisualAddressSchema = z.object({ nonce: z.string().uuid() }).strict();
+export const DesktopVisualBoundsUpdateSchema = DesktopVisualAddressSchema.extend({
+  bounds: DesktopVisualBoundsSchema,
+});
+export const DesktopVisualCommandSchema = DesktopVisualAddressSchema.extend({
+  command: VisualCommandSchema,
+});
+export const DesktopVisualStateSchema = z
+  .object({
+    binding: VisualBindingSchema,
+    snapshot: VisualSnapshotSchema,
+    stateRevision: VisualRevisionSchema,
+  })
+  .strict();
+export type DesktopVisualMount = z.infer<typeof DesktopVisualMountSchema>;
+export type DesktopVisualBoundsUpdate = z.infer<typeof DesktopVisualBoundsUpdateSchema>;
+export type DesktopVisualCommand = z.infer<typeof DesktopVisualCommandSchema>;
+export type DesktopVisualState = z.infer<typeof DesktopVisualStateSchema>;
+export type DesktopVisualAddress = z.infer<typeof DesktopVisualAddressSchema>;
+export interface DesktopVisualBridge {
+  mount(input: DesktopVisualMount): Promise<void>;
+  bounds(input: DesktopVisualBoundsUpdate): Promise<void>;
+  command(input: DesktopVisualCommand): Promise<void>;
+  restore(input: DesktopVisualState): Promise<void>;
+  dispose(input: DesktopVisualAddress): Promise<void>;
+}
 
 export type VisualRenderDocument = z.infer<typeof VisualRenderDocumentSchema>;
 export type VisualView = z.infer<typeof VisualViewSchema>;
