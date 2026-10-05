@@ -430,7 +430,7 @@ try {
           PASEO_ELECTRON_USER_DATA_DIR: path.join(runtime, "user-data"),
           PASEO_ORACLE_DESKTOP_MAIN: path.join(repository, "packages/desktop/dist/main.js"),
           PASEO_ELECTRON_FLAGS:
-            "--lang=en-US --autoplay-policy=no-user-gesture-required --mute-audio",
+            "--lang=en-US --autoplay-policy=no-user-gesture-required --mute-audio --disable-backgrounding-occluded-windows --disable-renderer-backgrounding",
         },
         timeout: 120_000,
       });

@@ -287,7 +287,10 @@ try {
     title: "S1 voice",
   });
 
+  // Pi writes the session file with the first prompt; before the judge prompts, no entry exists.
+  let prompted = false;
   function sessionEntries() {
+    if (!prompted) return [];
     const sessionRoot = path.join(piDir, "sessions");
     for (const relative of readdirSync(sessionRoot, { recursive: true })) {
       if (!String(relative).endsWith(".jsonl")) continue;
@@ -413,7 +416,9 @@ try {
         // Test-harness switches: stable English labels and a file-backed fake microphone (the
         // macOS audio service sandbox cannot read the fixture file unless it is relaxed); output is
         // muted at the device so judge runs stay silent while WebAudio still renders and is tapped.
-        PASEO_ELECTRON_FLAGS: `--lang=en-US --disable-features=AudioServiceSandbox --use-fake-ui-for-media-stream --use-fake-device-for-media-stream --use-file-for-fake-audio-capture=${wav}%noloop --autoplay-policy=no-user-gesture-required --mute-audio`,
+        // The judge window opens unfocused behind the operator's windows: occlusion must not mark it
+        // hidden (Chromium's testing switches), or presence would depend on the desktop layout.
+        PASEO_ELECTRON_FLAGS: `--lang=en-US --disable-features=AudioServiceSandbox --use-fake-ui-for-media-stream --use-fake-device-for-media-stream --use-file-for-fake-audio-capture=${wav}%noloop --autoplay-policy=no-user-gesture-required --mute-audio --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`,
       },
       timeout: 120_000,
     });
@@ -509,6 +514,7 @@ try {
     return { file, sampleRate };
   }
   async function speak(text) {
+    prompted = true;
     await client.sendAgentMessage(
       agent.id,
       `oracle-call:${JSON.stringify({ name: "speak", arguments: { text } })}`,
@@ -637,6 +643,7 @@ try {
 
     await check("dictated input while the agent is busy is queued and delivered once", async () => {
       writeFileSync(busyMarker, "busy");
+      prompted = true;
       await client.sendAgentMessage(
         agent.id,
         `oracle-call:${JSON.stringify({ name: "hello", arguments: {} })}`,
