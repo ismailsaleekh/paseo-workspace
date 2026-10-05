@@ -18,6 +18,7 @@ const CallSchema = z
       "visual_act",
       "visual_inspect",
       "visual_list",
+      "speak",
     ]),
     arguments: z.record(z.string(), z.json()),
   })
