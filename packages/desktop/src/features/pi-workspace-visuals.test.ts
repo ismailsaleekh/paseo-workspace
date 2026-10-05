@@ -453,7 +453,14 @@ test("real Electron guest capture contains current canvas pixels across view res
       if (!(ready instanceof Promise)) throw new Error("Capture fixture did not start");
       await ready;
     });
-    const guest = app.windows().find((page) => page.url() === guestUrl);
+    // Playwright attaches the guest's page asynchronously after the main process reports readiness;
+    // wait (bounded) for it instead of assuming it is already listed.
+    let guest = app.windows().find((page) => page.url() === guestUrl);
+    const guestDeadline = Date.now() + 15_000;
+    while (!guest && Date.now() < guestDeadline) {
+      await new Promise((done) => setTimeout(done, 100));
+      guest = app.windows().find((page) => page.url() === guestUrl);
+    }
     if (!guest) throw new Error("Real guest page is missing");
     for (const [height, covered] of [
       [360, false],
