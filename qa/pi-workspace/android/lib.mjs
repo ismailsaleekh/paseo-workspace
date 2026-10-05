@@ -5,6 +5,7 @@ import { createSocket } from "node:dgram";
 import {
   existsSync,
   readdirSync,
+  readFileSync,
   openSync,
   closeSync,
   writeFileSync,
@@ -16,7 +17,7 @@ import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { WebSocket } from "ws";
 
@@ -36,6 +37,45 @@ export const tools = {
   avd: "pi-paseo-judge",
   gradleUserHome: path.join(cache, "gradle"),
 };
+/**
+ * Judge-owned no-idle UI dumper (`no-idle-dump/NoIdleDump.java`), compiled offline with the private
+ * JDK 17 and d8 into a cache keyed by the source hash.
+ */
+let noIdleDumperJar = null;
+function noIdleDumper() {
+  if (noIdleDumperJar) return noIdleDumperJar;
+  const source = path.join(repository, "qa/pi-workspace/android/no-idle-dump/NoIdleDump.java");
+  const digest = createHash("sha256").update(readFileSync(source)).digest("hex").slice(0, 16);
+  const outDir = path.join(cache, "judge-tools", `no-idle-dump-${digest}`);
+  const jar = path.join(outDir, "no-idle-dump.jar");
+  if (!existsSync(jar)) {
+    const androidJar = path.join(sdk, "platforms/android-36/android.jar");
+    const classes = path.join(outDir, "classes");
+    mkdirSync(classes, { recursive: true });
+    execFileSync(
+      path.join(tools.javaHome, "bin/javac"),
+      ["--release", "8", "-nowarn", "-cp", androidJar, "-d", classes, source],
+      { env: androidEnv(), stdio: ["ignore", "ignore", "pipe"] },
+    );
+    execFileSync(
+      path.join(sdk, "build-tools/36.0.0/d8"),
+      [
+        "--release",
+        "--min-api",
+        "30",
+        "--lib",
+        androidJar,
+        "--output",
+        jar,
+        path.join(classes, "NoIdleDump.class"),
+      ],
+      { env: androidEnv(), stdio: ["ignore", "ignore", "pipe"] },
+    );
+  }
+  noIdleDumperJar = jar;
+  return jar;
+}
+
 export const PASEO_PACKAGE = "sh.paseo.debug";
 export const COMPANION_PACKAGE = "sh.paseo.debug.visualhost";
 export const SINK_HOST_FROM_EMULATOR = "10.0.2.2";
@@ -343,12 +383,33 @@ export class Device {
   async screencap() {
     return this.run(["exec-out", "screencap", "-p"], { encoding: "buffer", timeout: 30_000 });
   }
+  /**
+   * A fresh UI hierarchy, never a stale file. `uiautomator dump` first needs one second without
+   * accessibility events; while a Paseo turn runs, its ticking timer can prevent that, and the
+   * standard dump then writes nothing ("could not get idle state"). In that case the same tree is
+   * dumped without the idle wait through the shell UiAutomation (`NoIdleDump`).
+   */
   dump() {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const result = this.tryShell(["uiautomator", "dump", "/sdcard/judge-ui.xml"]);
-      if (result && result.includes("dumped")) break;
+    const file = "/sdcard/judge-ui.xml";
+    this.shell(["rm", "-f", file]);
+    const standard = this.tryShell(["uiautomator", "dump", file]);
+    if (!(standard && standard.includes("dumped"))) {
+      if (!this.noIdleReady) {
+        this.run(["push", noIdleDumper(), "/data/local/tmp/judge-no-idle-dump.jar"]);
+        const size = this.shell(["wm", "size"]);
+        const match =
+          size.match(/Override size: (\d+)x(\d+)/) ?? size.match(/Physical size: (\d+)x(\d+)/);
+        if (!match) fail(`cannot read the display size: ${size}`);
+        this.displaySize = `${match[1]} ${match[2]}`;
+        this.noIdleReady = true;
+      }
+      const noIdle = this.tryShell([
+        `CLASSPATH=/system/framework/android.test.runner.jar:/system/framework/uiautomator.jar:/data/local/tmp/judge-no-idle-dump.jar app_process /system/bin NoIdleDump ${file} ${this.displaySize}`,
+      ]);
+      if (!(noIdle && noIdle.includes("dumped")))
+        fail(`UI hierarchy dump failed: ${standard ?? "no output"} / ${noIdle ?? "no output"}`);
     }
-    const xml = this.run(["exec-out", "cat", "/sdcard/judge-ui.xml"]);
+    const xml = this.run(["exec-out", "cat", file]);
     const nodes = [];
     for (const match of xml.matchAll(/<node ([^>]*?)\/?>/g)) {
       const attrs = Object.fromEntries(
