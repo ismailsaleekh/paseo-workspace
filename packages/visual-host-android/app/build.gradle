@@ -1,0 +1,74 @@
+plugins {
+  id "com.android.application"
+  id "org.jetbrains.kotlin.android"
+}
+
+// -PpaseoVariant=production builds sh.paseo.visualhost for the Paseo app sh.paseo; the default
+// development variant builds sh.paseo.debug.visualhost for Paseo Debug (sh.paseo.debug).
+def paseoVariant = (project.findProperty("paseoVariant") ?: "development").toString()
+def hostPackages = [development: "sh.paseo.debug", production: "sh.paseo"]
+if (!hostPackages.containsKey(paseoVariant)) {
+  throw new GradleException("paseoVariant must be development or production, got ${paseoVariant}")
+}
+def hostPackage = hostPackages[paseoVariant]
+
+// The visual host must carry the Paseo app's signing certificate: the binding permission is
+// signature-level. There is no unsigned or debug-signed fallback for release builds.
+def signingStore = project.findProperty("paseoSigningStore")
+def signingAlias = project.findProperty("paseoSigningAlias")
+def signingPassword = project.findProperty("paseoSigningPassword")
+def releaseRequested = gradle.startParameter.taskNames.any { it.toLowerCase().contains("release") }
+if (releaseRequested && !(signingStore && signingAlias && signingPassword)) {
+  throw new GradleException(
+    "Release builds need -PpaseoSigningStore, -PpaseoSigningAlias and -PpaseoSigningPassword " +
+      "(the Paseo app's signing key)")
+}
+
+android {
+  namespace "sh.paseo.visualhost"
+  compileSdk 36
+
+  defaultConfig {
+    applicationId "${hostPackage}.visualhost"
+    // SurfaceControlViewHost embedding needs Android 11 (API 30).
+    minSdk 30
+    targetSdk 36
+    versionCode 1
+    versionName "0.1.0"
+    manifestPlaceholders = [hostPackage: hostPackage]
+  }
+
+  signingConfigs {
+    paseo {
+      if (signingStore) {
+        storeFile file(signingStore.toString())
+        storePassword signingPassword?.toString()
+        keyAlias signingAlias?.toString()
+        keyPassword signingPassword?.toString()
+      }
+    }
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+      signingConfig signingConfigs.paseo
+    }
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+  lint {
+    // The build runs offline from cached artifacts only; lint is not part of this artifact.
+    checkReleaseBuilds false
+  }
+}
+
+dependencies {
+  implementation "androidx.webkit:webkit:1.14.0"
+}

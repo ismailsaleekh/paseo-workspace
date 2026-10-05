@@ -39,7 +39,8 @@ export function visualStateMessage(current: VisualRenderDocument): VisualStateMe
 interface BridgeDocumentInput {
   current: VisualRenderDocument;
   commandId: string | null;
-  platform: "web" | "native";
+  /** web: sandboxed iframe; native: in-app WebView (iOS); android: companion visual host. */
+  platform: "web" | "native" | "android";
 }
 
 /** Only the document identity, saved snapshot and narrow commands cross the sandbox. */
@@ -54,6 +55,10 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
   }).replace(/</g, "\\u003c");
   const script = `(() => {
     const config = ${configuration};
+    // The Android visual host injects its message port before any document script runs; keep the
+    // reference so later document code cannot swap the transport this bridge reports through.
+    const hostPort = config.platform === 'android' ? window.paseoVisualHost : null;
+    if (config.platform === 'android' && (!hostPort || typeof hostPort.postMessage !== 'function')) throw new Error('Visual host transport is unavailable');
     let registration = null;
     let ready = false;
     let sequence = 0;
@@ -76,6 +81,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       const message = JSON.stringify({type:'paseo-visual',receipt});
       if (message.length > 65536) throw new Error('Visual observation exceeds its size limit');
       if (config.platform === 'native') window.ReactNativeWebView.postMessage(message);
+      else if (hostPort) hostPort.postMessage(message);
       else window.parent.postMessage(JSON.parse(message),'*');
     }
     function fail(commandId, error) {

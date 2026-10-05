@@ -1,6 +1,6 @@
 # Pi workspace visual tools
 
-Internal V2-D implementation for the paired Paseo fork. **V2-D acceptance and deployment readiness remain pending until the independent judge and planc submission pass.** This extends the existing Pi conversation; it adds no model router or replacement agent.
+Internal V2 implementation for the paired Paseo fork (V2-D desktop landed; V2-A Android in this candidate). **V2-A acceptance, physical HyperOS 3 / Android 16 verification and deployment readiness remain pending until the independent judge, planc submission and the device check pass.** This extends the existing Pi conversation; it adds no model router or replacement agent.
 
 ## Install the paired artifacts
 
@@ -37,7 +37,7 @@ Results have matching `details` and `structuredContent`, plus JSON text. Failure
 
 Multiple hosts may display the same artifact. Each host has an opaque client identity, distinct from its internal document nonce. A late join restores the conversation's current visual automatically. State synchronization keeps the document mounted and converges on stored state; stale-base publications are rejected and restored, not used to overwrite newer state.
 
-Inspection returns the answering `client` and `displays: [{client, platform, active}]`. On Electron, activity follows the latest mount or trusted input in the dedicated guest. Publishing state or inspecting an addressed client does not claim activity. Hidden/closed addressed displays are not substituted with another client.
+Inspection returns the answering `client` and `displays: [{client, platform, active}]`, where `platform` is `electron`, `android`, `web` or `ios`. Activity follows the latest mount or trusted input: inside the dedicated guest on Electron, and inside the embedded visual host surface on Android. Publishing state or inspecting an addressed client does not claim activity. Hidden/closed addressed displays are not substituted with another client. Desktop and Android displays of the same artifact can be live at the same time and are addressed independently.
 
 With `screenshot:true`, a supported display returns one Pi `image/png` content part and metadata:
 
@@ -45,14 +45,15 @@ With `screenshot:true`, a supported display returns one Pi `image/png` content p
 screenshot: {client, mimeType, width, height, viewport:{width,height}, pixelRatio, revision, stateRevision}
 ```
 
-Image bytes are not duplicated in the text or structured details. Electron captures the displayed guest's viewport through its main-owned CDP connection, never a backend render, full-document screenshot or cached image. Operation, connection, document, source/state revision, viewport and lifetime bindings are rechecked after asynchronous capture. PNGs are bounded to 2 MiB and 4096 pixels per dimension. Captures have a five-second frame deadline and bounded concurrency.
+Image bytes are not duplicated in the text or structured details. Electron captures the displayed guest's viewport through its main-owned CDP connection. Android captures the live document inside the companion visual host: the same WebView is recorded into a `RenderNode` and rendered by `HardwareRenderer` into an `ImageReader` (WebGL included); Paseo's own window capture cannot see the embedded surface and is never used. Neither platform uses a backend render, full-document screenshot or cached image. Operation, connection, document, source/state revision, viewport and lifetime bindings are rechecked after asynchronous capture. PNGs are bounded to 2 MiB and 4096 pixels per dimension. Captures have a frame deadline and bounded concurrency.
 
 | Error | Meaning |
 | --- | --- |
 | `CLIENT_UNAVAILABLE` | No display is available for the conversation, including an unaddressed screenshot request |
-| `DISPLAY_UNAVAILABLE` | The addressed display is unknown, closed, hidden or not showing the artifact |
-| `CAPTURE_UNSUPPORTED` | The existing display cannot supply actual pixels; plain web and the current native adapter report this |
-| `DOCUMENT_UNRESPONSIVE` | The trusted desktop host terminated the hung document; reopen or replace it to recover |
+| `DISPLAY_UNAVAILABLE` | The addressed display is unknown, closed, hidden, backgrounded or not showing the artifact |
+| `CAPTURE_UNSUPPORTED` | The existing display cannot supply actual pixels; plain web and the iOS adapter report this |
+| `DOCUMENT_UNRESPONSIVE` | The trusted desktop or Android host terminated the hung document; reopen or replace it to recover |
+| `RENDERER_UNAVAILABLE` | The Android display cannot render visuals: the visual host app is missing, unbindable or differently signed, or the device is below Android 11. Paseo explains this in the surface and never falls back to an in-app WebView |
 | `STALE_STATE` / `STALE_DOCUMENT` | A publication or asynchronous result no longer matches its binding |
 
 Other V1 errors retain their meaning. A terminated document stays represented as unresponsive until reopened/replaced; its stored source/state are retained. The composer belongs to the app, not the generated guest.
@@ -96,6 +97,8 @@ The existing agent panel hosts the visual without a new tab or draft owner. The 
 
 Electron uses a dedicated top-level guest and nonpersistent session, distinct from the app and ordinary browser profile. Node, general IPC and `paseoDesktop` are absent from generated content. Main-process policy denies network egress, permissions, navigation away, new windows and downloads. A per-guest WebRTC policy and blackhole session proxy cover socket-level paths that CSP alone cannot control. The ordinary browser's session and policy are untouched. DNS-only side channels cannot be measured by the loopback oracle; the proxy policy addresses that residual, and passing sink checks must not be described as exhaustive DNS observation.
 
-A host deadline terminates a nonresponding guest renderer without terminating the app. Desktop relaunch uses a fresh guest and stored state. Plain web retains the sandboxed iframe and does not claim complete desktop containment. Android/native containment, native capture and physical HyperOS 3 / Android 16 verification remain V2-A. Speech, detours, deployment and joint UX acceptance remain later obligations.
+A host deadline terminates a nonresponding guest renderer without terminating the app. Desktop relaunch uses a fresh guest and stored state. Plain web retains the sandboxed iframe and does not claim complete desktop containment.
+
+On Android, generated documents render only in the companion **Paseo visual host** app (`<paseo id>.visualhost`, see `packages/visual-host-android/README.md`). It requests no INTERNET permission, so its UID cannot open sockets at all: WebRTC, preconnect and DNS are closed by the kernel, not by CSP. It serves the document only through request interception from a synthetic origin with a header CSP, refuses every other request, denies navigation, windows, downloads, file/content access, geolocation and every permission request, and embeds the document into Paseo through `SurfaceControlViewHost`. Only a same-signature Paseo can bind it (signature-level permission declared by both apps). Its host-owned deadline terminates an unresponsive renderer and reports `DOCUMENT_UNRESPONSIVE` while Paseo's composer stays usable. Backgrounding Paseo releases the display; returning remounts the stored visual with a fresh document identity. Visual host death never crashes Paseo; the visual can be reopened. The iOS adapter is unchanged and reports capture unsupported. Emulator acceptance is not physical-device evidence: HyperOS 3 / Android 16 verification, speech, detours, deployment and joint UX acceptance remain later obligations.
 
 See [TEST_PLAN.md](TEST_PLAN.md) for the coverage map and [TESTING.md](TESTING.md) for isolated checks. No paid model calls are used by default QA.

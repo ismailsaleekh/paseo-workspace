@@ -1,8 +1,8 @@
 # Visual workspace coverage map
 
-Status: V2-D candidate. Test presence is not a passing receipt. The independent Root judge and Accepted certificate decide desktop acceptance; Android/native, speech, detours and deployment remain outside this unit.
+Status: V2-A candidate on top of landed V2-D. Test presence is not a passing receipt. The independent Root judge and Accepted certificate decide emulator acceptance; physical HyperOS 3 / Android 16 verification, speech, detours and deployment remain outside this unit.
 
-Package paths below are relative to `src/` or `tests/`. Host suites are under `packages/server/src/server/pi-workspace/`, controller suites under `packages/app/src/pi-workspace/`, and desktop feature tests under `packages/desktop/src/features/`.
+Package paths below are relative to `src/` or `tests/`. Host suites are under `packages/server/src/server/pi-workspace/`, controller and Android adapter suites under `packages/app/src/pi-workspace/`, and desktop feature tests under `packages/desktop/src/features/`. The Android visual host itself is `packages/visual-host-android/` with its embedding module in `packages/app/modules/paseo-visual-host/`.
 
 | Feature / boundary | Public surface | Unit | SDK / RPC / package | Real integration |
 | --- | --- | --- | --- | --- |
@@ -21,6 +21,12 @@ Package paths below are relative to `src/` or `tests/`. Host suites are under `p
 | Persistent relaunch | Desktop conversation reopen | Existing storage/recovery tests | Same isolated daemon and paired package | V2 relaunch with same userData and explicit reopen; automatic late join is observed separately |
 | Distribution identity | Paired tarballs | `tests/package/manifest.test.ts` | Installed SDK execution, no workspace links | Root package QA and dry pack |
 | Type safety | Source and tests | Strict tsc, AST detector self-tests | SDK/RPC compiled under package strictness | Root app and desktop typechecks |
+| Android display participation | Platform `android`, capture and trusted host activity | `service.android.test.ts`, `controller.android.test.ts` | Capture-sized receipts pass the Android controller bound; web still refused | V2-A active Android display, simultaneous desktop + Android, addressed per-client captures |
+| Android capture binding | Screenshot inspection on Android | `android-visual-host.test.ts` (attached only to its own inspection receipt, revalidated after capture, bounded, explicit `CAPTURE_FAILED`) | `AndroidVisualHostEventSchema`, `VisualCaptureSchema` | V2-A decodes the private motif twice from Pi images, stale capture rejected, after hang/background/host death/relaunch |
+| No-INTERNET visual host containment | Companion app policy | Policy is native code; installation is exercised by the oracle | Judge build checks id, absent INTERNET permission and shared signing certificate | V2-A separate UID and process, 26 egress vectors with zero TCP/UDP sink arrivals, privileged/media probes denied, navigation refused |
+| `RENDERER_UNAVAILABLE` without fallback | Missing/unbindable host, API < 30 | `service.android.test.ts`, `android-visual-host.test.ts` | Error code passes through the unchanged tool layer | V2-A uninstall: present fails `RENDERER_UNAVAILABLE`, no motif on screen; reinstall + reopen recovers |
+| Android lifecycle | Background/foreground, host death, relaunch | `controller.android.test.ts` (stop drops the binding), `service.android.test.ts` (release, fresh identity) | — | V2-A background → `DISPLAY_UNAVAILABLE` / `CLIENT_UNAVAILABLE`, foreground remount, force-stopped host never crashes Paseo, relaunch restores state |
+| Android host deadline | Hung document | `android-visual-host.test.ts` maps the host failure to the awaited command | — | V2-A `DOCUMENT_UNRESPONSIVE` within bounds, Paseo process unchanged, composer typing, no ANR |
 
 ## Required edge cases
 
@@ -37,6 +43,6 @@ The capture-port tests use controlled CDP replies to prove bindings and cleanup.
 
 A1 changes exactly two existing service expectations: accept multiple displays while retaining released/replaced refusal; use `CLIENT_UNAVAILABLE` for no-display screenshots while retaining recovery/listing/no-fabricated-image checks. Other existing tests and every judge file remain protected.
 
-Plain web and the current native adapter do not claim actual capture. No TUI/PTY suite is applicable because the package has no terminal UI or shortcuts. Android needs its own native containment/capture implementation, emulator Root and physical HyperOS 3 / Android 16 evidence. DNS-only side channels are not observable with loopback sinks; guest proxy enforcement is required, not an assertion that the oracle observed every DNS path.
+Plain web and the iOS adapter do not claim actual capture. No TUI/PTY suite is applicable because the package has no terminal UI or shortcuts. The Android companion's policy, deadline and capture are Kotlin code without JVM unit tests (the offline judge runs no Gradle tests); the emulator Root is their witness, and physical HyperOS 3 / Android 16 evidence is still required. Emulator results never replace it. DNS-only side channels are not observable with loopback sinks; on Android the companion's missing INTERNET permission denies sockets at the kernel, on desktop guest proxy enforcement is required.
 
 No unexecuted check is green by virtue of appearing in this file. Record actual test, Root and certificate receipts separately.

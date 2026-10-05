@@ -74,6 +74,18 @@ export const VisualDisplaySchema = z
   })
   .strict();
 export type VisualPlatform = z.infer<typeof VisualPlatformSchema>;
+/** Displays whose trusted host captures the actual displayed document pixels. */
+export const VISUAL_CAPTURE_PLATFORMS: ReadonlySet<VisualPlatform> = new Set<VisualPlatform>([
+  "electron",
+  "android",
+]);
+/** Displays with a trusted native host that reports activity and visibility outside the document. */
+export const VISUAL_HOST_SIGNAL_PLATFORMS: ReadonlySet<VisualPlatform> = new Set<VisualPlatform>([
+  "electron",
+  "android",
+]);
+/** The display platform cannot render generated documents (for example a missing Android visual host). */
+export const VISUAL_RENDERER_UNAVAILABLE = "RENDERER_UNAVAILABLE";
 
 export const VisualScreenshotSchema = z
   .object({

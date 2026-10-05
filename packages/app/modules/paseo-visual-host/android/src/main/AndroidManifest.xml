@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Pi visuals render in the companion visual host app (<application id>.visualhost), which has
+    no INTERNET permission. Both apps declare this identical signature-level permission, so the
+    binding works in any install order and only a same-signature companion can be bound.
+  -->
+  <permission
+    android:name="${applicationId}.permission.VISUAL_HOST"
+    android:protectionLevel="signature" />
+  <uses-permission android:name="${applicationId}.permission.VISUAL_HOST" />
+  <queries>
+    <package android:name="${applicationId}.visualhost" />
+  </queries>
+</manifest>

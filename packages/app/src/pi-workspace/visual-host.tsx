@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
-import { Platform, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { AppState, Platform, Text, View } from "react-native";
+import { requireOptionalNativeModule } from "expo";
 import { getIsElectron } from "@/constants/platform";
 import type { VisualPlatform } from "@getpaseo/protocol/pi-workspace/contracts";
 import { StyleSheet } from "react-native-unistyles";
@@ -31,8 +32,50 @@ function visualPlatform(): VisualPlatform {
   throw new Error("Pi visual workspace is unavailable on this platform");
 }
 
+// On Android a backgrounded app releases its display (DISPLAY_UNAVAILABLE when addressed); the
+// foregrounded app observes again and remounts the stored visual with a fresh document identity.
+function useAndroidForeground(): boolean {
+  const [foreground, setForeground] = useState(
+    () => Platform.OS !== "android" || AppState.currentState !== "background",
+  );
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const subscription = AppState.addEventListener("change", (state) => {
+      setForeground(state !== "background");
+    });
+    return () => subscription.remove();
+  }, []);
+  return foreground;
+}
+
+interface AndroidRendererWarmup {
+  prepare(): Promise<void>;
+  release(): Promise<void>;
+}
+// While a visual surface is active, keep the companion visual host started so a document's
+// display deadline does not include the host's cold start. Rendering still needs the document
+// view; this only binds and warms the host.
+function useAndroidRendererWarmup(active: boolean): void {
+  useEffect(() => {
+    if (Platform.OS !== "android" || !active) return undefined;
+    const host = requireOptionalNativeModule<AndroidRendererWarmup>("PaseoVisualHost");
+    if (!host) return undefined;
+    host.prepare().catch((error: unknown) => {
+      console.warn("Android visual host warm-up failed", error);
+    });
+    return () => {
+      host.release().catch((error: unknown) => {
+        console.warn("Android visual host warm-up release failed", error);
+      });
+    };
+  }, [active]);
+}
+
 function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
-  const active = useRetainedPanelActive();
+  const retained = useRetainedPanelActive();
+  const foreground = useAndroidForeground();
+  const active = retained && foreground;
+  useAndroidRendererWarmup(active);
   const controller = useMemo(
     () => new VisualController(client, agentId, visualPlatform()),
     [client, agentId],

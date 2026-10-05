@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    No uses-permission at all, in particular no android.permission.INTERNET: the kernel denies
+    sockets to this UID, which closes every network path of generated documents (WebRTC,
+    preconnect, DNS). Only the same-signature Paseo app can bind the service; it declares this
+    identical signature-level permission too.
+  -->
+  <permission
+    android:name="${hostPackage}.permission.VISUAL_HOST"
+    android:protectionLevel="signature" />
+
+  <application
+    android:allowBackup="false"
+    android:label="Paseo visual host"
+    android:usesCleartextTraffic="false">
+    <service
+      android:name=".VisualHostService"
+      android:exported="true"
+      android:permission="${hostPackage}.permission.VISUAL_HOST" />
+  </application>
+</manifest>

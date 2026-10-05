@@ -4,6 +4,9 @@ import { Ajv } from "ajv";
 import {
   VisualFailure,
   VISUAL_OPERATION_TIMEOUT_MS,
+  VISUAL_CAPTURE_PLATFORMS,
+  VISUAL_HOST_SIGNAL_PLATFORMS,
+  VISUAL_RENDERER_UNAVAILABLE,
   parseVisualActions,
   parseVisualSnapshot,
   assertVisualJsonBound,
@@ -27,6 +30,13 @@ import type {
   VisualHostSignal,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { VisualStorage } from "./storage.js";
+
+/** A display must acknowledge within this budget; the agent tool allows the operation 2 s more. */
+const DISPLAY_DEADLINE_MS = VISUAL_OPERATION_TIMEOUT_MS - 2000;
+/** Longest wait for a re-established display before a released one fails a render. */
+const REPLACEMENT_WAIT_MS = 4000;
+/** Smallest acknowledgement window worth re-targeting a render into. */
+const MIN_RENDER_MS = 1000;
 
 const CAPTURE_OPERATION_ERRORS = new Set([
   "DISPLAY_TIMEOUT",
@@ -84,6 +94,24 @@ interface ReceiptValidationInput {
   peer: VisualPeer;
   receipt: VisualReceipt;
 }
+interface SaveReceiptStateInput {
+  owner: VisualOwner;
+  id: string;
+  revision: number;
+  stateRevision: number;
+  snapshot: VisualDocument["snapshot"];
+  /** An agent inspection: it reports state and must not fail on a concurrent change. */
+  read: boolean;
+}
+interface RenderRequest {
+  owner: VisualOwner;
+  document: VisualDocument;
+  signal: AbortSignal;
+  replacement: boolean;
+  previousRevision: number;
+  /** Wall-clock end of the display budget shared by the first and a re-targeted attempt. */
+  deadline: number;
+}
 interface Conversation {
   owner: VisualOwner;
   currentId: string | null;
@@ -131,6 +159,7 @@ export class VisualService {
   private readonly activeOwners = new Map<string, VisualOwner>();
   private readonly peers = new Map<string, VisualPeer>();
   private readonly busy = new Set<string>();
+  private readonly replacementWaiters = new Set<() => void>();
   private mountOrder = 0;
   private readonly validator = new Ajv({ strict: true, allErrors: false, validateFormats: false });
 
@@ -192,6 +221,9 @@ export class VisualService {
           );
         peer.current = this.boundDocument(peer, document);
       }
+      // Operations waiting for a re-established display re-check after this observation's
+      // response reached the client (a zero-delay deadline runs after the session reply).
+      for (const wake of this.replacementWaiters) this.scheduleDeadline(wake, 0);
       return { view: this.view(peer), release: () => this.release(peer) };
     } catch (error) {
       this.release(peer);
@@ -408,7 +440,7 @@ export class VisualService {
     const current = target.current;
     if (!current || target.status !== "rendered")
       throw new VisualFailure("NOT_DISPLAYED", "Open this visual before live inspection", id);
-    if (operation.screenshot && target.platform !== "electron")
+    if (operation.screenshot && !VISUAL_CAPTURE_PLATFORMS.has(target.platform))
       throw new VisualFailure(
         "CAPTURE_UNSUPPORTED",
         "This display does not provide actual-client pixel capture",
@@ -447,6 +479,12 @@ export class VisualService {
   private requireResponsive(peer: VisualPeer, id: string): void {
     if (peer.error?.code === "DOCUMENT_UNRESPONSIVE")
       throw new VisualFailure("DOCUMENT_UNRESPONSIVE", "Reopen the terminated visual document", id);
+    if (peer.error?.code === VISUAL_RENDERER_UNAVAILABLE)
+      throw new VisualFailure(
+        VISUAL_RENDERER_UNAVAILABLE,
+        "This display cannot render visuals; install or repair its visual host, then reopen the visual",
+        id,
+      );
   }
 
   private async act({ owner, operation, signal }: VisualActionExecution): Promise<VisualRecord> {
@@ -507,7 +545,74 @@ export class VisualService {
     replacement: boolean,
     previousRevision = document.revision,
   ): Promise<void> {
+    const request: RenderRequest = {
+      owner,
+      document,
+      signal,
+      replacement,
+      previousRevision,
+      deadline: Date.now() + DISPLAY_DEADLINE_MS,
+    };
     const peer = this.requirePeer(owner, document.id);
+    try {
+      await this.renderOn(peer, request, DISPLAY_DEADLINE_MS);
+    } catch (error) {
+      // The same app may re-establish its display mid-operation (relaunch, reconnect, panel
+      // remount). Rendering is idempotent, so it is re-targeted once to the replacement display
+      // within the original display budget; without one the original failure stands.
+      const next = await this.replacementFor(peer, error, request);
+      if (!next) throw error;
+      await this.renderOn(next, request, Math.max(MIN_RENDER_MS, request.deadline - Date.now()));
+    }
+  }
+
+  private async replacementFor(
+    peer: VisualPeer,
+    error: unknown,
+    request: RenderRequest,
+  ): Promise<VisualPeer | undefined> {
+    const released =
+      error instanceof VisualFailure && error.code === "DISCONNECTED" && !peer.active;
+    const remaining = request.deadline - Date.now() - MIN_RENDER_MS;
+    if (!released || request.signal.aborted || remaining <= 0) return undefined;
+    return this.waitForReplacement(peer, request.signal, Math.min(REPLACEMENT_WAIT_MS, remaining));
+  }
+
+  private waitForReplacement(
+    released: VisualPeer,
+    signal: AbortSignal,
+    milliseconds: number,
+  ): Promise<VisualPeer | undefined> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const cancels: (() => void)[] = [];
+      const finish = (found: VisualPeer | undefined) => {
+        if (settled) return;
+        settled = true;
+        this.replacementWaiters.delete(check);
+        signal.removeEventListener("abort", abort);
+        for (const cancel of cancels) cancel();
+        resolve(found);
+      };
+      const check = () => {
+        const candidate = this.latestPeer(released.agentId);
+        if (candidate && candidate !== released) finish(candidate);
+      };
+      const abort = () => finish(undefined);
+      signal.addEventListener("abort", abort, { once: true });
+      this.replacementWaiters.add(check);
+      cancels.push(this.scheduleDeadline(() => finish(undefined), milliseconds));
+      // A replacement that observed before the release was processed is already present.
+      cancels.push(this.scheduleDeadline(check, 0));
+    });
+  }
+
+  private async renderOn(
+    peer: VisualPeer,
+    request: RenderRequest,
+    milliseconds: number,
+  ): Promise<void> {
+    const { owner, document, signal, replacement, previousRevision } = request;
     const previous = peer.current?.document ?? null;
     peer.current = this.boundDocument(peer, document);
     peer.documentSequence = 0;
@@ -519,6 +624,7 @@ export class VisualService {
         peer,
         { kind: "render", commandId: randomUUID(), current: peer.current },
         signal,
+        milliseconds,
       );
       checkCancellation(signal);
       const updated = replacement
@@ -564,6 +670,7 @@ export class VisualService {
     peer: VisualPeer,
     command: VisualCommand,
     signal: AbortSignal,
+    milliseconds = DISPLAY_DEADLINE_MS,
   ): Promise<VisualReceipt> {
     checkCancellation(signal);
     return new Promise<VisualReceipt>((resolve, reject) => {
@@ -579,10 +686,7 @@ export class VisualService {
         );
       };
       const abort = () => failed("CANCELLED");
-      const cancelDeadline = this.scheduleDeadline(
-        () => failed("DISPLAY_TIMEOUT"),
-        VISUAL_OPERATION_TIMEOUT_MS - 2000,
-      );
+      const cancelDeadline = this.scheduleDeadline(() => failed("DISPLAY_TIMEOUT"), milliseconds);
       const cleanup = () => {
         cancelDeadline();
         signal.removeEventListener("abort", abort);
@@ -680,10 +784,10 @@ export class VisualService {
     const current = peer.current;
     if (!current || !sameBinding(current.binding, signal.binding))
       throw new VisualFailure("STALE_DOCUMENT", "Host event belongs to a replaced visual");
-    if (peer.platform !== "electron")
+    if (!VISUAL_HOST_SIGNAL_PLATFORMS.has(peer.platform))
       throw new VisualFailure(
         "UNSUPPORTED_CLIENT",
-        "This display has no trusted desktop event channel",
+        "This display has no trusted host event channel",
       );
     if (signal.kind === "visibility") {
       peer.visible = signal.visible;
@@ -724,7 +828,7 @@ export class VisualService {
 
   private async publishReceipt(
     { peer, receipt }: ReceiptValidationInput,
-    { current, snapshot, actions }: ValidatedVisualReceipt,
+    { current, snapshot, actions, pending }: ValidatedVisualReceipt,
   ): Promise<void> {
     const owner = this.activeOwners.get(peer.agentId);
     if (!owner) throw new VisualFailure("STALE_SESSION", "No Pi session owns this visual");
@@ -744,20 +848,50 @@ export class VisualService {
     // COMPAT(visualStateBase): added in v0.10.3; remove after 2027-04-04 once all
     // visual clients publish an explicit base. V1 receipts use their bound view's base.
     const stateRevision = receipt.stateRevision ?? current.document.stateRevision;
-    const updated = await this.storage.saveState({
-      owner,
-      id: current.document.id,
-      revision: current.document.revision,
-      stateRevision,
-      snapshot,
-    });
+    const read = pending?.kind === "inspect";
+    const authoritative = await this.storage.get({ owner, id: current.document.id });
+    let updated: VisualDocument;
+    if (
+      authoritative.revision === current.document.revision &&
+      isDeepStrictEqual(authoritative.snapshot, snapshot)
+    ) {
+      // Nothing changed: no new state revision. Bumping it here would make every other display's
+      // next genuine change look stale and be rejected (a lost user update).
+      updated = authoritative;
+    } else if (read && stateRevision !== authoritative.stateRevision) {
+      // An agent read answered from an older base while another display published. The read
+      // reports the authoritative stored state; synchronization restores this display.
+      updated = authoritative;
+    } else {
+      updated = await this.saveReceiptState({
+        owner,
+        id: current.document.id,
+        revision: current.document.revision,
+        stateRevision,
+        snapshot,
+        read,
+      });
+    }
     // Activity order is fixed at observation, render or trusted interaction. A late mount
     // receipt must not displace a display the user interacted with in the meantime.
     peer.current = { binding: current.binding, document: updated };
     peer.actions = actions;
     peer.status = "rendered";
     peer.error = null;
-    this.synchronize(owner, updated);
+    const unchangedForAll =
+      updated === authoritative && stateRevision === authoritative.stateRevision;
+    if (!unchangedForAll) this.synchronize(owner, updated);
+  }
+
+  /** Saves a publication; a concurrent change only fails publications, never agent reads. */
+  private async saveReceiptState(input: SaveReceiptStateInput): Promise<VisualDocument> {
+    const { read, ...save } = input;
+    try {
+      return await this.storage.saveState(save);
+    } catch (error) {
+      if (!read || !(error instanceof VisualFailure) || error.code !== "STALE_STATE") throw error;
+      return this.storage.get({ owner: save.owner, id: save.id });
+    }
   }
 
   private async recoverStaleState(
@@ -819,7 +953,7 @@ export class VisualService {
     }
     const valid =
       pending?.capture &&
-      input.peer.platform === "electron" &&
+      VISUAL_CAPTURE_PLATFORMS.has(input.peer.platform) &&
       input.peer.visible &&
       capture.operationId === input.receipt.commandId &&
       sameBinding(capture.binding, current.binding) &&

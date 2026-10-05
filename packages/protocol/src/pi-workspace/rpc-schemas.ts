@@ -10,6 +10,7 @@ import {
   VisualCaptureSchema,
   VisualFailure,
   VISUAL_SNAPSHOT_BYTES,
+  VISUAL_CAPTURE_DIMENSION,
   assertVisualJsonBound,
   parseVisualSnapshot,
 } from "./contracts.js";
@@ -220,6 +221,44 @@ export interface DesktopVisualBridge {
   restore(input: DesktopVisualState): Promise<void>;
   dispose(input: DesktopVisualAddress): Promise<void>;
 }
+
+/** Bound on one document-to-host message relayed by the Android visual host (bridge limit is 64 KiB). */
+export const ANDROID_VISUAL_MESSAGE_CHARS = 128 * 1024;
+const AndroidVisualSessionSchema = z.string().uuid();
+const AndroidVisualTextSchema = z.string().min(1).max(2048);
+// Events emitted by the Paseo Android visual host view. They come from trusted native code, but
+// every field is still checked: the document message text originates in the untrusted document.
+export const AndroidVisualHostEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("attached"), session: AndroidVisualSessionSchema }),
+  z.object({
+    type: z.literal("message"),
+    session: AndroidVisualSessionSchema,
+    data: z.string().min(1).max(ANDROID_VISUAL_MESSAGE_CHARS),
+  }),
+  z.object({
+    type: z.literal("capture"),
+    session: AndroidVisualSessionSchema,
+    request: z.string().uuid(),
+    data: VisualCaptureSchema.shape.data,
+    width: z.number().int().positive().max(VISUAL_CAPTURE_DIMENSION),
+    height: z.number().int().positive().max(VISUAL_CAPTURE_DIMENSION),
+    density: z.number().positive().max(4),
+  }),
+  z.object({
+    type: z.literal("captureFailed"),
+    session: AndroidVisualSessionSchema,
+    request: z.string().uuid(),
+    message: AndroidVisualTextSchema,
+  }),
+  z.object({
+    type: z.literal("error"),
+    session: AndroidVisualSessionSchema,
+    code: z.string().min(1).max(128),
+    message: AndroidVisualTextSchema,
+  }),
+  z.object({ type: z.literal("activity"), session: AndroidVisualSessionSchema }),
+]);
+export type AndroidVisualHostEvent = z.infer<typeof AndroidVisualHostEventSchema>;
 
 export type VisualRenderDocument = z.infer<typeof VisualRenderDocumentSchema>;
 export type VisualView = z.infer<typeof VisualViewSchema>;

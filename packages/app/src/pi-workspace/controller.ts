@@ -1,6 +1,7 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   assertVisualJsonBound,
+  VISUAL_CAPTURE_PLATFORMS,
   VISUAL_FRAME_BYTES,
   type VisualPlatform,
 } from "@getpaseo/protocol/pi-workspace/contracts";
@@ -128,6 +129,18 @@ export class VisualController {
     const observation = this.observation;
     this.observation = null;
     this.generation = null;
+    // A released observation no longer owns a display; never remount its obsolete binding when
+    // the surface resumes before the next snapshot arrives.
+    if (this.state.current || this.state.command || this.state.restoration) {
+      this.update({
+        status: "loading",
+        current: null,
+        restoration: null,
+        renderCommandId: null,
+        command: null,
+        error: null,
+      });
+    }
     this.stopping = this.stopping.then(async () => {
       if (observation) await observation.release();
       return undefined;
@@ -225,7 +238,11 @@ export class VisualController {
 
   receive = (value: unknown): void => {
     try {
-      assertVisualJsonBound(value, this.platform === "electron" ? VISUAL_FRAME_BYTES : 128 * 1024);
+      // Receipts carrying an actual-client capture may approach the capture byte bound.
+      assertVisualJsonBound(
+        value,
+        VISUAL_CAPTURE_PLATFORMS.has(this.platform) ? VISUAL_FRAME_BYTES : 128 * 1024,
+      );
       const { receipt } = DocumentMessageSchema.parse(value);
       const current = this.state.current;
       if (
