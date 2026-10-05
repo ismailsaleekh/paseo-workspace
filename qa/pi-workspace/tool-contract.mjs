@@ -18,9 +18,10 @@ assert.equal(
 const args = process.argv.slice(2);
 const selfCheck = args.length === 1 && args[0] === "--self-check";
 const visualPhase = args.length === 2 && args[0] === "--phase" && args[1] === "visual";
-if (args.length !== 0 && !selfCheck && !visualPhase) {
+const speechPhase = args.length === 2 && args[0] === "--phase" && args[1] === "speech";
+if (args.length !== 0 && !selfCheck && !visualPhase && !speechPhase) {
   throw new Error(
-    "Use no arguments for all eight tools, --phase visual for the five-tool slice, or --self-check",
+    "Use no arguments for all eight tools, --phase visual for the five-tool slice, --phase speech for visual tools plus speak, or --self-check",
   );
 }
 const repository = process.cwd();
@@ -40,6 +41,8 @@ const completeNames = [
 let expectedNames = completeNames;
 if (selfCheck) expectedNames = ["hello"];
 else if (visualPhase) expectedNames = completeNames.filter((name) => name.startsWith("visual_"));
+else if (speechPhase)
+  expectedNames = completeNames.filter((name) => name.startsWith("visual_") || name === "speak");
 
 assert.equal(
   existsSync(entrypoint),
@@ -201,9 +204,9 @@ try {
       );
       assert.notEqual(result.details.error.code, "");
     }
-    const scope = visualPhase
-      ? "five visual tools only; speech/branches pending"
-      : "all eight tools";
+    let scope = "all eight tools";
+    if (visualPhase) scope = "five visual tools only; speech/branches pending";
+    else if (speechPhase) scope = "five visual tools plus speak; branches pending";
     console.log(`PASS real-Pi registration and unavailable-host behavior: ${scope}`);
   }
 } finally {

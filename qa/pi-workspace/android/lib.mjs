@@ -479,7 +479,15 @@ export async function startIsolatedDaemon(root, options = {}) {
         PASEO_LISTEN: `127.0.0.1:${port}`,
         PASEO_RELAY_ENABLED: "0",
         ...(options.corsOrigin ? { PASEO_CORS_ORIGINS: options.corsOrigin } : {}),
-        PASEO_DICTATION_ENABLED: "0",
+        // S1 flows opt into local speech from the task-owned read-only model copy.
+        ...(options.speechModels
+          ? {
+              PASEO_DICTATION_ENABLED: "1",
+              PASEO_DICTATION_STT_PROVIDER: "local",
+              PASEO_VOICE_TTS_PROVIDER: "local",
+              PASEO_LOCAL_MODELS_DIR: options.speechModels,
+            }
+          : { PASEO_DICTATION_ENABLED: "0" }),
         PASEO_VOICE_MODE_ENABLED: "0",
         PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0",
         PASEO_NODE_ENV: "development",
