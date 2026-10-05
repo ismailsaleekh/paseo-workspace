@@ -4,8 +4,8 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import {
   FailedToolSchema,
+  packageTools,
   unavailableCalls,
-  visualTools,
   withIsolatedHome,
   withSdk,
   readRequests,
@@ -21,13 +21,13 @@ const ExecutionResultSchema = z.object({
 
 async function verifyUnavailableTools(home: IsolatedHome): Promise<void> {
   await withSdk(home, async (session) => {
-    assert.deepEqual(session.getActiveToolNames().sort(), visualTools);
+    assert.deepEqual(session.getActiveToolNames().sort(), packageTools);
     assert.equal(
       session.messages.some((message) => message.role === "assistant"),
       false,
     );
     await assert.rejects(readFile(home.trace), { code: "ENOENT" });
-    for (const name of visualTools) {
+    for (const name of packageTools) {
       const definition = session.getToolDefinition(name);
       if (!definition) throw new Error(`Missing direct tool ${name}`);
       assert.equal(typeof definition.execute, "function");
@@ -52,7 +52,7 @@ async function verifyUnavailableTools(home: IsolatedHome): Promise<void> {
     } finally {
       unsubscribe();
     }
-    assert.equal(completed.length, 5);
+    assert.equal(completed.length, unavailableCalls.length);
     for (const raw of completed) {
       const result = ExecutionResultSchema.parse(raw);
       assert.deepEqual(result.structuredContent, result.details);
@@ -64,10 +64,10 @@ async function verifyUnavailableTools(home: IsolatedHome): Promise<void> {
     const requests = await readRequests(home);
     assert.equal(
       requests.length,
-      10,
+      unavailableCalls.length * 2,
       "Only each scripted tool selection and its ordinary follow-up may run",
     );
-    for (const request of requests) assert.deepEqual(request.tools.slice().sort(), visualTools);
+    for (const request of requests) assert.deepEqual(request.tools.slice().sort(), packageTools);
     assert.equal(session.getLastAssistantText(), "TEST_TOOL_COMPLETE");
   });
 }
@@ -89,7 +89,7 @@ async function verifyInvalidSource(home: IsolatedHome): Promise<void> {
 }
 
 test(
-  "real SDK loads exactly five direct tools without a model request; each unavailable call completes with structured failure",
+  "real SDK loads exactly the six direct tools (five visual + speak) without a model request; each unavailable call completes with structured failure",
   { timeout: 60_000 },
   async () => {
     await withIsolatedHome(verifyUnavailableTools);

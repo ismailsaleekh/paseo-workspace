@@ -17,6 +17,8 @@ export const visualTools = [
   "visual_present",
   "visual_update",
 ];
+/** Direct tools the package registers in the S1 phase: the five visual tools plus `speak`. */
+export const packageTools = [...visualTools, "speak"].sort();
 export const testId = "7e8e07d1-c3af-4b75-b61e-3ce2c2c8603a";
 export const unavailableCalls = [
   { name: "visual_present", arguments: { mode: "new", title: "SDK example", html: "<p>test</p>" } },
@@ -24,6 +26,7 @@ export const unavailableCalls = [
   { name: "visual_act", arguments: { id: testId, action: "pause" } },
   { name: "visual_inspect", arguments: { screenshot: true } },
   { name: "visual_list", arguments: {} },
+  { name: "speak", arguments: { text: "Exact supplied words." } },
 ];
 export interface IsolatedHome {
   root: string;
@@ -130,7 +133,7 @@ export async function withRpc(
       "--no-prompt-templates",
       "--no-context-files",
       "--tools",
-      visualTools.join(","),
+      packageTools.join(","),
       "-e",
       entry,
       "-e",

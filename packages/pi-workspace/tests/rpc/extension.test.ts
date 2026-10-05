@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   FailedToolSchema,
+  packageTools,
   unavailableCalls,
-  visualTools,
   withIsolatedHome,
   withRpc,
   readRequests,
@@ -35,8 +35,8 @@ async function verifyRpcTools(home: IsolatedHome): Promise<void> {
     assert.equal((await client.getState()).isStreaming, false);
     assert.equal((await client.getState()).sessionId, before.sessionId);
     const requests = await readRequests(home);
-    assert.equal(requests.length, 10);
-    for (const request of requests) assert.deepEqual(request.tools.slice().sort(), visualTools);
+    assert.equal(requests.length, unavailableCalls.length * 2);
+    for (const request of requests) assert.deepEqual(request.tools.slice().sort(), packageTools);
     assert.equal(await client.getLastAssistantText(), "TEST_TOOL_COMPLETE");
   });
 }
@@ -70,7 +70,7 @@ async function verifyRpcText(home: IsolatedHome): Promise<void> {
 }
 
 test(
-  "real Pi RPC executes all five tools through the scripted model and settles without host or credential access",
+  "real Pi RPC executes all six tools through the scripted model and settles without host or credential access",
   { timeout: 90_000 },
   async () => {
     await withIsolatedHome(verifyRpcTools);

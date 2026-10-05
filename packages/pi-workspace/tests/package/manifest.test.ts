@@ -10,7 +10,7 @@ import {
   FailedToolSchema,
   packageRoot,
   runCommand,
-  visualTools,
+  packageTools,
   withIsolatedHome,
   withSdk,
 } from "../helpers/pi-harness.js";
@@ -36,7 +36,7 @@ async function digest(file: string): Promise<string> {
 }
 
 async function verifyInstalledExtension(session: AgentSession): Promise<void> {
-  assert.deepEqual(session.getActiveToolNames().sort(), visualTools);
+  assert.deepEqual(session.getActiveToolNames().sort(), packageTools);
   await session.prompt('call:{"name":"visual_list","arguments":{}}');
   const result = FailedToolSchema.parse(
     session.messages.findLast((message) => message.role === "toolResult"),
