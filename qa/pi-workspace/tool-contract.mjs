@@ -11,7 +11,7 @@ const sdkRoot = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent";
 const sdkManifest = JSON.parse(await readFile(path.join(sdkRoot, "package.json"), "utf8"));
 assert.equal(
   sdkManifest.version,
-  "1.0.0",
+  "1.0.3",
   "Revalidate this oracle before changing the Pi SDK version",
 );
 

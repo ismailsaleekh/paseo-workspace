@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const sdkRoot = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent";
 const sdkManifest = JSON.parse(await readFile(path.join(sdkRoot, "package.json"), "utf8"));
-assert.equal(sdkManifest.version, "1.0.0");
+assert.equal(sdkManifest.version, "1.0.3");
 const temporary = await mkdtemp(path.join(tmpdir(), "pi-workspace-tree-oracle-"));
 const agentDir = path.join(temporary, "agent");
 const projectDir = path.join(temporary, "project");
