@@ -17,8 +17,8 @@ export const visualTools = [
   "visual_present",
   "visual_update",
 ];
-/** Direct tools the package registers in the S1 phase: the five visual tools plus `speak`. */
-export const packageTools = [...visualTools, "speak"].sort();
+/** All eight direct tools the package registers (B1 phase): five visual, `speak`, two branch tools. */
+export const packageTools = [...visualTools, "speak", "branch_open", "branch_return"].sort();
 export const testId = "7e8e07d1-c3af-4b75-b61e-3ce2c2c8603a";
 export const unavailableCalls = [
   { name: "visual_present", arguments: { mode: "new", title: "SDK example", html: "<p>test</p>" } },
@@ -27,6 +27,8 @@ export const unavailableCalls = [
   { name: "visual_inspect", arguments: { screenshot: true } },
   { name: "visual_list", arguments: {} },
   { name: "speak", arguments: { text: "Exact supplied words." } },
+  { name: "branch_open", arguments: { title: "Unavailable host" } },
+  { name: "branch_return", arguments: { notes: "No host attached." } },
 ];
 export interface IsolatedHome {
   root: string;

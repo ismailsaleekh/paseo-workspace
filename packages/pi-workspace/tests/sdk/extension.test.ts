@@ -89,7 +89,7 @@ async function verifyInvalidSource(home: IsolatedHome): Promise<void> {
 }
 
 test(
-  "real SDK loads exactly the six direct tools (five visual + speak) without a model request; each unavailable call completes with structured failure",
+  "real SDK loads exactly the eight direct tools without a model request; each unavailable call completes with structured failure",
   { timeout: 60_000 },
   async () => {
     await withIsolatedHome(verifyUnavailableTools);

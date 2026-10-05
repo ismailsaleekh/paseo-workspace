@@ -70,7 +70,7 @@ async function verifyRpcText(home: IsolatedHome): Promise<void> {
 }
 
 test(
-  "real Pi RPC executes all six tools through the scripted model and settles without host or credential access",
+  "real Pi RPC executes all eight tools through the scripted model and settles without host or credential access",
   { timeout: 90_000 },
   async () => {
     await withIsolatedHome(verifyRpcTools);
