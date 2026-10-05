@@ -932,6 +932,7 @@ export async function createPaseoDaemon(
   );
   const visualAttachment = new VisualAttachmentBridge({
     execute: (owner, operation, signal) => piWorkspace.execute(owner, operation, signal),
+    speak: (owner, request, signal) => piWorkspace.speak(owner, request, signal),
     reportFailure: (error) => logger.error({ err: error }, "Pi visual attachment failed"),
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
@@ -1584,6 +1585,9 @@ export async function createPaseoDaemon(
     speechConfig: config.speech,
   });
   logger.info({ elapsed: elapsed() }, "Speech service created");
+  piWorkspace.connectSpeech({
+    resolveTts: () => speechService.resolveAgentSpeechTts?.() ?? null,
+  });
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
 

@@ -9,6 +9,7 @@ import {
   inspectParameters,
   listParameters,
 } from "./tools.js";
+import { createSpeakTool } from "./speak.js";
 
 const CONTEXT_TYPE = "paseo.visual.observation";
 
@@ -68,6 +69,7 @@ export default function workspace(pi: ExtensionAPI): void {
         "List a bounded page of stored visuals in this attached conversation. Use the returned cursor for the next page and visual_present with mode open to revisit an ID. Does not search other sessions.",
     }),
   );
+  pi.registerTool(createSpeakTool({ connection, bind }));
   pi.on("session_start", (_event, ctx) => {
     bind(ctx.sessionManager.getSessionId());
   });

@@ -10,6 +10,10 @@ import { useRetainedPanelActive } from "@/components/retained-panel";
 import { Button } from "@/components/ui/button";
 import { VisualController } from "./controller";
 import { VisualDocument } from "./document";
+import { createAudioEngine } from "@/voice/audio-engine";
+import type { AudioEngine } from "@/voice/audio-engine-types";
+import { sharedSpeechPlayer, type SpeechPlayer } from "./speech-player";
+import { SpeechStop } from "./speech-stop";
 
 export interface VisualHostProps {
   serverId: string;
@@ -80,6 +84,7 @@ function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
     () => new VisualController(client, agentId, visualPlatform()),
     [client, agentId],
   );
+  const { player, holder } = useSpeechPlayer(controller, client, agentId);
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
@@ -108,36 +113,99 @@ function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
       void controller.stop().catch(reportError);
     };
   }, [controller, active, reportError]);
-  if (!active || (!state.current && state.error === null)) return null;
+  if (!active) return null;
+  const surface =
+    !state.current && state.error === null ? null : (
+      <View style={styles.surface} testID="pi-workspace-surface">
+        {state.error ? (
+          <View style={styles.notice}>
+            <Text style={styles.error} accessibilityRole="alert">
+              {state.error}
+            </Text>
+            <Button size="sm" variant="secondary" onPress={restart}>
+              Reconnect visual
+            </Button>
+          </View>
+        ) : null}
+        {state.status === "loading" ? (
+          <Text style={styles.pending}>Waiting for visual display acknowledgement…</Text>
+        ) : null}
+        {state.current ? (
+          <VisualDocument
+            key={state.current.binding.nonce}
+            current={state.current}
+            restoration={state.restoration}
+            renderCommandId={state.renderCommandId}
+            command={state.command}
+            receive={controller.receive}
+            hostEvent={controller.hostEvent}
+            reportError={reportError}
+          />
+        ) : null}
+      </View>
+    );
   return (
-    <View style={styles.surface} testID="pi-workspace-surface">
-      {state.error ? (
-        <View style={styles.notice}>
-          <Text style={styles.error} accessibilityRole="alert">
-            {state.error}
-          </Text>
-          <Button size="sm" variant="secondary" onPress={restart}>
-            Reconnect visual
-          </Button>
-        </View>
-      ) : null}
-      {state.status === "loading" ? (
-        <Text style={styles.pending}>Waiting for visual display acknowledgement…</Text>
-      ) : null}
-      {state.current ? (
-        <VisualDocument
-          key={state.current.binding.nonce}
-          current={state.current}
-          restoration={state.restoration}
-          renderCommandId={state.renderCommandId}
-          command={state.command}
-          receive={controller.receive}
-          hostEvent={controller.hostEvent}
-          reportError={reportError}
-        />
-      ) : null}
-    </View>
+    <>
+      <SpeechStop player={player} holder={holder} />
+      {surface}
+    </>
   );
+}
+
+const SILENT_CAPTURE_CALLBACKS = {
+  onCaptureData: () => undefined,
+  onVolumeLevel: () => undefined,
+};
+
+function releaseSpeechEngine(engine: AudioEngine): void {
+  engine.clearQueue();
+  engine.stop();
+  // The web engine owns a private AudioContext. The native engine shares the platform audio
+  // session with dictation, so it is only stopped, never torn down.
+  if (Platform.OS === "web")
+    void engine.destroy().catch((error: unknown) => {
+      console.warn("Speech playback engine release failed", error);
+    });
+}
+
+/** The native two-way audio module reports whether it is still writing queued output. */
+interface NativeAudioOutput {
+  isPlaying(): boolean;
+}
+const nativeAudioOutput =
+  Platform.OS === "web" ? null : requireOptionalNativeModule<NativeAudioOutput>("ExpoTwoWayAudio");
+const outputDrained = nativeAudioOutput ? () => !nativeAudioOutput.isPlaying() : undefined;
+
+/**
+ * The conversation's shared speech player, attached to this observation. Several panels of one
+ * conversation share it, so the stop control appears wherever the conversation is visible.
+ */
+function useSpeechPlayer(
+  controller: VisualController,
+  client: DaemonClient,
+  agentId: string,
+): { player: SpeechPlayer; holder: object | null } {
+  const player = useMemo(
+    () =>
+      sharedSpeechPlayer(client, agentId, {
+        createEngine: () =>
+          createAudioEngine(SILENT_CAPTURE_CALLBACKS, { traceLabel: "pi-speech" }),
+        releaseEngine: releaseSpeechEngine,
+        ...(outputDrained ? { outputDrained } : {}),
+      }),
+    [client, agentId],
+  );
+  const [holder, setHolder] = useState<object | null>(null);
+  useEffect(() => {
+    const held = player.hold();
+    setHolder(held.holder);
+    return () => {
+      setHolder(null);
+      held.release();
+    };
+  }, [player]);
+  useEffect(() => controller.attachSpeech(player), [controller, player]);
+  return { player, holder };
 }
 
 const styles = StyleSheet.create((theme) => ({

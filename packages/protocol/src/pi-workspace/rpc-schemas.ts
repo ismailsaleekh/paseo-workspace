@@ -14,6 +14,7 @@ import {
   assertVisualJsonBound,
   parseVisualSnapshot,
 } from "./contracts.js";
+import { SpeechEventSchema, SpeechReceiptSchema } from "./speech.js";
 
 export const VisualRenderDocumentSchema = z
   .object({
@@ -64,6 +65,9 @@ export const VisualEventSchema = z.discriminatedUnion("kind", [
       command: VisualCommandSchema,
     })
     .strict(),
+  // Agent speech for the one playback client; unsequenced and independent of visual commands.
+  // Sent only to observations that announced speech support with a `ready` speech receipt.
+  z.object({ kind: z.literal("speech"), speech: SpeechEventSchema }).strict(),
 ]);
 export const VisualReceiptSchema = z
   .object({
@@ -83,7 +87,11 @@ export const VisualHostSignalSchema = z.discriminatedUnion("kind", [
     .object({ kind: z.literal("visibility"), binding: VisualBindingSchema, visible: z.boolean() })
     .strict(),
 ]);
-export const VisualClientReceiptSchema = z.union([VisualReceiptSchema, VisualHostSignalSchema]);
+export const VisualClientReceiptSchema = z.union([
+  VisualReceiptSchema,
+  VisualHostSignalSchema,
+  SpeechReceiptSchema,
+]);
 export const DesktopVisualEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("paseo-visual"), receipt: VisualReceiptSchema }).strict(),
   z.object({ type: z.literal("paseo-visual-host"), event: VisualHostSignalSchema }).strict(),
@@ -140,6 +148,7 @@ export const VisualWireEventSchema = z.discriminatedUnion("kind", [
       command: WireCommandSchema,
     })
     .strict(),
+  z.object({ kind: z.literal("speech"), speech: SpeechEventSchema }).strict(),
 ]);
 
 export const VisualSubscribeRequestSchema = z.object({
@@ -179,6 +188,7 @@ export const VisualReceiptResponseSchema = z.object({
     stateRevision: z.number().int().positive(),
   }),
 });
+// For speech receipts `stateRevision` acknowledges the observation's speech receipt sequence.
 
 export const DesktopVisualBoundsSchema = z
   .object({
@@ -311,6 +321,7 @@ export function decodeVisualView(view: VisualWireView): VisualView {
 }
 export function encodeVisualEvent(event: VisualEvent): VisualWireEvent {
   if (event.kind === "snapshot") return { kind: "snapshot", view: encodeVisualView(event.view) };
+  if (event.kind === "speech") return event;
   const command = event.command;
   if (command.kind === "render")
     return { ...event, command: { ...command, current: encodeDocument(command.current) } };
@@ -322,6 +333,7 @@ export function encodeVisualEvent(event: VisualEvent): VisualWireEvent {
 }
 export function decodeVisualEvent(event: VisualWireEvent): VisualEvent {
   if (event.kind === "snapshot") return { kind: "snapshot", view: decodeVisualView(event.view) };
+  if (event.kind === "speech") return event;
   const command = event.command;
   if (command.kind === "render")
     return { ...event, command: { ...command, current: decodeDocument(command.current) } };

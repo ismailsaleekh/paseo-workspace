@@ -16,6 +16,28 @@ import {
   type VisualView,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { DocumentMessageSchema } from "./document-bridge";
+import {
+  speechReceipt,
+  type SpeechClientSignal,
+  type SpeechEvent,
+} from "@getpaseo/protocol/pi-workspace/speech";
+
+/** A playback report for one utterance (everything except the readiness announcement). */
+export type SpeechReport = Exclude<SpeechClientSignal, { type: "ready" }>;
+/** The observation an utterance arrived on; reports go back through it. */
+export interface SpeechOrigin {
+  report(report: SpeechReport): void;
+}
+/**
+ * Plays agent speech. One player may serve several observations of the same agent (an app can
+ * keep more than one panel of a conversation mounted), so the visible stop control always
+ * belongs to whatever is playing.
+ */
+export interface SpeechSink {
+  accept(event: SpeechEvent, origin: SpeechOrigin): void;
+  /** The origin's observation ended or was replaced: stop its playback without reporting. */
+  reset(origin: SpeechOrigin): void;
+}
 
 export type VisualTransport = Pick<
   DaemonClient,
@@ -46,6 +68,10 @@ export class VisualController {
   private sequence = 0;
   private lifetime = 0;
   private stopping: Promise<void> = Promise.resolve();
+  private speech: SpeechSink | null = null;
+  private readonly speechOrigin: SpeechOrigin = {
+    report: (report) => this.reportSpeech(report),
+  };
 
   constructor(
     private readonly client: VisualTransport,
@@ -71,6 +97,40 @@ export class VisualController {
     this.update({ ...this.state, status: "error", error: message });
   }
 
+  /**
+   * Makes this observation a speech playback client. The daemon routes an utterance only to
+   * observations that announced themselves with a `ready` speech receipt.
+   */
+  attachSpeech(sink: SpeechSink): () => void {
+    this.speech = sink;
+    this.announceSpeech();
+    return () => {
+      if (this.speech !== sink) return;
+      this.speech = null;
+      sink.reset(this.speechOrigin);
+    };
+  }
+
+  /** Sends a playback report for the current observation. */
+  reportSpeech(signal: SpeechReport): void {
+    this.sendSpeech(signal);
+  }
+
+  private announceSpeech(): void {
+    if (this.speech) this.sendSpeech({ type: "ready" });
+  }
+
+  private sendSpeech(signal: SpeechClientSignal): void {
+    const generation = this.generation;
+    if (!generation) return;
+    const lifetime = this.lifetime;
+    void this.client
+      .sendPiWorkspaceReceipt(this.agentId, speechReceipt(generation, signal))
+      .catch((error: unknown) => {
+        if (lifetime === this.lifetime && generation === this.generation) this.reportError(error);
+      });
+  }
+
   start(): void {
     if (this.observation) throw new Error("Visual observation already started");
     const lifetime = ++this.lifetime;
@@ -78,6 +138,7 @@ export class VisualController {
       if (lifetime !== this.lifetime) return;
       if (status.status === "disconnected" || status.status === "disposed") {
         this.generation = null;
+        this.speech?.reset(this.speechOrigin);
         this.update({
           status: "disconnected",
           current: null,
@@ -124,6 +185,7 @@ export class VisualController {
 
   async stop(): Promise<void> {
     this.lifetime += 1;
+    this.speech?.reset(this.speechOrigin);
     this.disconnectStatus?.();
     this.disconnectStatus = null;
     const observation = this.observation;
@@ -158,8 +220,13 @@ export class VisualController {
       current.binding.nonce === next.binding.nonce &&
       current.binding.id === next.binding.id &&
       current.binding.revision === next.binding.revision;
+    const freshObservation = view.generation !== this.generation;
     this.generation = view.generation;
     this.sequence = view.sequence;
+    if (freshObservation) {
+      this.speech?.reset(this.speechOrigin);
+      this.announceSpeech();
+    }
     if (sameDocument) {
       this.update({ ...this.state, restoration: next });
       return;
@@ -175,6 +242,11 @@ export class VisualController {
   }
 
   private acceptEvent(event: VisualEvent): void {
+    if (event.kind === "speech") {
+      if (!this.speech) throw new Error("Speech arrived for an observation without a player");
+      this.speech.accept(event.speech, this.speechOrigin);
+      return;
+    }
     if (event.kind === "snapshot") {
       if (this.generation === event.view.generation && event.view.sequence < this.sequence) return;
       this.acceptSnapshot(event.view);

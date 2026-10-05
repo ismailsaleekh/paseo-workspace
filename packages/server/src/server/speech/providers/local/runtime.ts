@@ -19,6 +19,7 @@ import {
   WorkerBackedTextToSpeechProvider,
   WorkerBackedTurnDetectionProvider,
 } from "./worker-client.js";
+import type { LocalSpeechWorkerConfig } from "./worker-protocol.js";
 
 interface ResolvedLocalModels {
   dictationLocalSttModel: LocalSttModelId;
@@ -37,6 +38,11 @@ export interface InitializedLocalSpeech {
   ttsService: TextToSpeechProvider | null;
   dictationSttService: SpeechToTextProvider | null;
   localVoiceTtsProvider: TextToSpeechProvider | null;
+  /**
+   * Local TTS for the Pi `speak` tool. Available whenever the local provider is configured,
+   * independent of realtime voice mode (which agent speech never uses).
+   */
+  agentSpeechTtsService: TextToSpeechProvider | null;
   localModelConfig: {
     modelsDir: string;
     defaultModelIds: LocalSpeechModelId[];
@@ -134,6 +140,36 @@ function initializeLocalVoiceTts(params: {
   return new WorkerBackedTextToSpeechProvider(client);
 }
 
+function resolveWorkerConfig(
+  speechConfig: PaseoSpeechConfig | null,
+  localModels: ResolvedLocalModels,
+): LocalSpeechWorkerConfig | null {
+  const localConfig = speechConfig?.local ?? null;
+  if (!localConfig) return null;
+  return {
+    modelsDir: localConfig.modelsDir,
+    voiceSttModel: localModels.voiceLocalSttModel,
+    dictationSttModel: localModels.dictationLocalSttModel,
+    voiceTtsModel: localModels.voiceLocalTtsModel,
+    voiceTtsSpeakerId: localConfig.models.voiceTtsSpeakerId,
+    voiceTtsSpeed: localConfig.models.voiceTtsSpeed,
+  };
+}
+
+/**
+ * Agent speech synthesizes in its own worker process: the native speech engines are not
+ * reentrant and decode synchronously, so playback synthesis must never stall or disturb a
+ * dictation session (microphone and playback stay independent). The worker starts on first use.
+ */
+function initializeAgentSpeech(
+  workerConfig: LocalSpeechWorkerConfig | null,
+  logger: Logger,
+): { tts: TextToSpeechProvider | null; cleanup: () => void } {
+  if (!workerConfig) return { tts: null, cleanup: () => undefined };
+  const client = new LocalSpeechWorkerClient({ logger, config: workerConfig });
+  return { tts: initializeLocalVoiceTts({ client }), cleanup: () => client.shutdown() };
+}
+
 export async function initializeLocalSpeechServices(params: {
   providers: RequestedSpeechProviders;
   speechConfig: PaseoSpeechConfig | null;
@@ -154,19 +190,11 @@ export async function initializeLocalSpeechServices(params: {
     models: localModels,
   });
 
-  const workerClient = localConfig
-    ? new LocalSpeechWorkerClient({
-        logger,
-        config: {
-          modelsDir: localConfig.modelsDir,
-          voiceSttModel: localModels.voiceLocalSttModel,
-          dictationSttModel: localModels.dictationLocalSttModel,
-          voiceTtsModel: localModels.voiceLocalTtsModel,
-          voiceTtsSpeakerId: speechConfig?.local?.models.voiceTtsSpeakerId,
-          voiceTtsSpeed: speechConfig?.local?.models.voiceTtsSpeed,
-        },
-      })
+  const workerConfig = resolveWorkerConfig(speechConfig, localModels);
+  const workerClient = workerConfig
+    ? new LocalSpeechWorkerClient({ logger, config: workerConfig })
     : null;
+  const agentSpeech = initializeAgentSpeech(workerConfig, logger);
 
   if (isLocalProviderEnabled(providers.voiceTurnDetection)) {
     if (workerClient) {
@@ -205,7 +233,10 @@ export async function initializeLocalSpeechServices(params: {
 
   const cleanup = () => {
     workerClient?.shutdown();
+    agentSpeech.cleanup();
   };
+
+  const agentSpeechTtsService = agentSpeech.tts;
 
   return {
     turnDetectionService,
@@ -213,6 +244,7 @@ export async function initializeLocalSpeechServices(params: {
     ttsService,
     dictationSttService,
     localVoiceTtsProvider,
+    agentSpeechTtsService,
     localModelConfig: localConfig
       ? {
           modelsDir: localConfig.modelsDir,

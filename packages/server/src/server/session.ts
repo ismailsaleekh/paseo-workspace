@@ -1,5 +1,6 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
 import { VisualSession } from "./session/pi-workspace/session.js";
+import type { ClientPresenceState } from "./agent-attention-policy.js";
 import { VisualFailure } from "@getpaseo/protocol/pi-workspace/contracts";
 import type { VisualService } from "./pi-workspace/service.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -897,6 +898,7 @@ export class Session {
         }
       },
       reply: (message) => this.emit(message),
+      presence: (source) => this.clientPresence(source),
     });
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry;
@@ -1215,6 +1217,18 @@ export class Session {
     if (appVersion && appVersion !== this.appVersion) {
       this.appVersion = appVersion;
     }
+  }
+
+  /** One connection's latest heartbeat presence, read-only, for Pi agent speech routing. */
+  private clientPresence(source: object): ClientPresenceState | null {
+    const activity = this.clientSources.get(source)?.activity;
+    if (!activity) return null;
+    return {
+      appVisible: activity.appVisible,
+      lastActivityAtMs: activity.lastActivityAt.getTime(),
+      focusedAgentId: activity.focusedAgentId,
+      focusedTerminalId: activity.focusedTerminalId,
+    };
   }
 
   updateClientCapabilities(

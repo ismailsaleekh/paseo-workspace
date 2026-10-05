@@ -30,6 +30,15 @@ import type {
   VisualHostSignal,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { VisualStorage } from "./storage.js";
+import {
+  parseSpeechReceipt,
+  speechEvent,
+  type SpeechReceipt,
+  type SpeechResult,
+} from "@getpaseo/protocol/pi-workspace/speech";
+import { PRESENCE_THRESHOLD_MS, type ClientPresenceState } from "../agent-attention-policy.js";
+import type { TextToSpeechProvider } from "../speech/speech-provider.js";
+import { SpeechUtterances } from "./speech.js";
 
 /** A display must acknowledge within this budget; the agent tool allows the operation 2 s more. */
 const DISPLAY_DEADLINE_MS = VISUAL_OPERATION_TIMEOUT_MS - 2000;
@@ -72,6 +81,11 @@ interface VisualPeer {
   emit(event: VisualEvent): void;
   pending: Map<string, PendingCommand>;
   tail: Promise<void>;
+  /** The observation announced agent speech playback with a `ready` speech receipt. */
+  speech: boolean;
+  speechReceipts: number;
+  /** The owning connection's `client_heartbeat` presence, when it reported one. */
+  presence(): ClientPresenceState | null;
 }
 interface VisualActionExecution {
   owner: VisualOwner;
@@ -121,6 +135,7 @@ export interface ObserveVisualInput {
   source: object;
   platform?: VisualPlatform;
   emit(event: VisualEvent): void;
+  presence?: () => ClientPresenceState | null;
 }
 export interface VisualObservation {
   view: VisualView;
@@ -130,6 +145,62 @@ export interface ReceiveVisualInput {
   agentId: string;
   source: object;
   receipt: VisualClientReceipt;
+}
+/** The daemon's local agent-speech engine; independent of realtime voice mode. */
+export interface VisualSpeechHost {
+  resolveTts(): TextToSpeechProvider | null;
+}
+export interface SpeakVisualInput {
+  utterance: string;
+  text: string;
+}
+
+function isSpeechReceipt(receipt: VisualClientReceipt): receipt is SpeechReceipt {
+  return "kind" in receipt && receipt.kind === "speech";
+}
+/** Resolves when the previous utterance of the conversation settled; rejects on cancellation. */
+function waitForSpeechTurn(
+  previous: Promise<void>,
+  signal: AbortSignal,
+  utterance: string,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () =>
+      reject(new VisualFailure("CANCELLED", "Speech was cancelled while queued", utterance));
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+    void previous.then(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+      return undefined;
+    });
+  });
+}
+/**
+ * Presence rank of a display that shows the conversation: focused on the agent, then recent
+ * activity, then the latest mount. Activity age only ranks; an idle operator still hears speech.
+ */
+function speechRank(peer: VisualPeer, agentId: string, now: number): number[] {
+  const presence = peer.presence();
+  const reported = presence ? presence.lastActivityAtMs : null;
+  const activity = reported === null ? null : Math.min(reported, now);
+  const present = activity !== null && now - activity <= PRESENCE_THRESHOLD_MS;
+  return [
+    presence?.focusedAgentId === agentId ? 1 : 0,
+    present && activity !== null ? activity : Number.NEGATIVE_INFINITY,
+    peer.mountOrder,
+  ];
+}
+function outranks(left: number[], right: number[]): boolean {
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index] ?? 0;
+    const b = right[index] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return false;
 }
 
 function sameBinding(left: VisualBinding, right: VisualBinding): boolean {
@@ -162,11 +233,21 @@ export class VisualService {
   private readonly replacementWaiters = new Set<() => void>();
   private mountOrder = 0;
   private readonly validator = new Ajv({ strict: true, allErrors: false, validateFormats: false });
+  private speechHost: VisualSpeechHost | null = null;
+  private readonly utterances: SpeechUtterances;
+  private readonly speechTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly storage: VisualStorage,
     private readonly scheduleDeadline: ScheduleVisualDeadline = scheduleVisualDeadline,
-  ) {}
+  ) {
+    this.utterances = new SpeechUtterances(scheduleDeadline);
+  }
+
+  /** Connects the daemon's local speech engine; created after this service at bootstrap. */
+  connectSpeech(host: VisualSpeechHost): void {
+    this.speechHost = host;
+  }
 
   private conversation(owner: VisualOwner): Conversation {
     const previous = this.activeOwners.get(owner.agentId);
@@ -204,6 +285,9 @@ export class VisualService {
       emit: input.emit,
       pending: new Map(),
       tail: Promise.resolve(),
+      speech: false,
+      speechReceipts: 0,
+      presence: input.presence ?? (() => null),
     };
     this.peers.set(peer.generation, peer);
     try {
@@ -233,10 +317,12 @@ export class VisualService {
 
   close(): void {
     for (const peer of this.peers.values()) this.release(peer);
+    this.utterances.close();
   }
 
   private release(peer: VisualPeer): void {
     peer.active = false;
+    this.utterances.release(peer.generation);
     for (const pending of peer.pending.values()) {
       pending.cleanup();
       pending.reject(
@@ -423,6 +509,103 @@ export class VisualService {
     } finally {
       this.busy.delete(key);
     }
+  }
+
+  /**
+   * Speaks one utterance on exactly one client: among the visible displays of this conversation
+   * that announced speech playback, the one ranked first by the connection's heartbeat presence.
+   * Utterances of one conversation play in order; visual operations are never blocked by speech.
+   */
+  async speak(
+    owner: VisualOwner,
+    request: SpeakVisualInput,
+    signal: AbortSignal,
+  ): Promise<SpeechResult> {
+    if (signal.aborted)
+      throw new VisualFailure("CANCELLED", "Speech was cancelled", request.utterance);
+    this.conversation(owner);
+    const previous = this.speechTails.get(owner.agentId) ?? Promise.resolve();
+    let releaseTurn: () => void = () => {
+      throw new Error("Speech turn was not initialized");
+    };
+    const tail = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    this.speechTails.set(owner.agentId, tail);
+    try {
+      await waitForSpeechTurn(previous, signal, request.utterance);
+      const peer = this.speechPeer(owner.agentId);
+      if (!peer)
+        throw new VisualFailure(
+          "CLIENT_UNAVAILABLE",
+          "No app with speech playback is displaying this conversation",
+          request.utterance,
+        );
+      const tts = this.speechHost?.resolveTts() ?? null;
+      if (!tts)
+        throw new VisualFailure(
+          "TTS_UNAVAILABLE",
+          "No local text-to-speech engine is available on this host",
+          request.utterance,
+        );
+      return await this.utterances.speak({
+        utterance: request.utterance,
+        text: request.text,
+        tts,
+        signal,
+        target: {
+          client: peer.generation,
+          send: (playback) => {
+            if (!peer.active)
+              throw new VisualFailure(
+                "CLIENT_DISCONNECTED",
+                "The playback client disconnected",
+                request.utterance,
+              );
+            peer.emit({ kind: "speech", speech: speechEvent(playback) });
+          },
+        },
+      });
+    } finally {
+      releaseTurn();
+      if (this.speechTails.get(owner.agentId) === tail) this.speechTails.delete(owner.agentId);
+    }
+  }
+
+  private speechPeer(agentId: string): VisualPeer | undefined {
+    const now = Date.now();
+    let best: VisualPeer | undefined;
+    let bestRank: number[] = [];
+    for (const peer of this.agentPeers(agentId)) {
+      if (!peer.speech || !peer.visible) continue;
+      // A hidden app (for example a backgrounded Android app) does not display the conversation.
+      if (peer.presence()?.appVisible === false) continue;
+      const rank = speechRank(peer, agentId, now);
+      if (!best || outranks(rank, bestRank)) {
+        best = peer;
+        bestRank = rank;
+      }
+    }
+    return best;
+  }
+
+  private receiveSpeech(input: ReceiveVisualInput, receipt: SpeechReceipt): number {
+    const peer = this.peers.get(receipt.clientGeneration);
+    if (!peer?.active || peer.agentId !== input.agentId || peer.source !== input.source)
+      throw new VisualFailure(
+        "STALE_CLIENT",
+        "Speech receipt does not belong to this authenticated connection",
+      );
+    const signal = parseSpeechReceipt(receipt);
+    if (!signal)
+      throw new VisualFailure(
+        "INVALID_SPEECH_REPORT",
+        "Speech receipt fields do not match its type",
+      );
+    if (signal.type === "ready") peer.speech = true;
+    else this.utterances.receive(peer.generation, signal);
+    peer.speechReceipts += 1;
+    return peer.speechReceipts;
   }
 
   private async inspect({
@@ -711,13 +894,14 @@ export class VisualService {
   }
 
   async receive(input: ReceiveVisualInput): Promise<number> {
-    const peer = this.peers.get(input.receipt.binding.clientGeneration);
+    const receipt = input.receipt;
+    if (isSpeechReceipt(receipt)) return this.receiveSpeech(input, receipt);
+    const peer = this.peers.get(receipt.binding.clientGeneration);
     if (!peer?.active || peer.agentId !== input.agentId || peer.source !== input.source)
       throw new VisualFailure(
         "STALE_CLIENT",
         "Visual receipt does not belong to this authenticated connection",
       );
-    const receipt = input.receipt;
     if ("kind" in receipt) return this.receiveHostSignal(peer, receipt);
     if (!peer.visible)
       throw new VisualFailure(

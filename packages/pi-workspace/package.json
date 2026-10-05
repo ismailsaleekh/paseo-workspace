@@ -1,7 +1,7 @@
 {
   "name": "@getpaseo/pi-workspace",
   "version": "0.1.0",
-  "description": "Conversation-bound interactive visual tools for Pi hosted by Paseo",
+  "description": "Conversation-bound interactive visuals and local agent speech for Pi hosted by Paseo",
   "keywords": [
     "pi",
     "pi-extension",
@@ -22,11 +22,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:type-safety": "node --import tsx --test tests/package/type-safety.test.ts",
-    "test:unit": "node --import tsx --test src/source.test.ts src/tools.test.ts src/tools.displays.test.ts",
+    "test:unit": "node --import tsx --test src/source.test.ts src/tools.test.ts src/tools.displays.test.ts src/speak.test.ts",
     "test:sdk": "node --import tsx --test tests/sdk/extension.test.ts",
     "test:rpc": "node --import tsx --test tests/rpc/extension.test.ts",
     "test:package": "node --import tsx --test tests/package/manifest.test.ts",
-    "test:host": "vitest run --root ../.. packages/server/src/server/pi-workspace/storage.test.ts packages/server/src/server/pi-workspace/attachment.test.ts packages/server/src/server/pi-workspace/service.test.ts packages/server/src/server/pi-workspace/service.displays.test.ts packages/server/src/server/pi-workspace/service.android.test.ts packages/app/src/pi-workspace/controller.test.ts packages/app/src/pi-workspace/controller.displays.test.ts packages/app/src/pi-workspace/controller.android.test.ts packages/app/src/pi-workspace/android-visual-host.test.ts packages/desktop/src/features/pi-workspace-visuals.test.ts packages/desktop/src/preload-sandbox.test.ts --bail=1 --maxWorkers=1",
+    "test:host": "vitest run --root ../.. packages/server/src/server/pi-workspace/storage.test.ts packages/server/src/server/pi-workspace/attachment.test.ts packages/server/src/server/pi-workspace/service.test.ts packages/server/src/server/pi-workspace/service.displays.test.ts packages/server/src/server/pi-workspace/service.android.test.ts packages/server/src/server/pi-workspace/speech.test.ts packages/server/src/server/pi-workspace/service.speech.test.ts packages/server/src/server/speech/providers/local/runtime.agent-speech.test.ts packages/app/src/pi-workspace/controller.test.ts packages/app/src/pi-workspace/controller.displays.test.ts packages/app/src/pi-workspace/controller.android.test.ts packages/app/src/pi-workspace/controller.speech.test.ts packages/app/src/pi-workspace/speech-player.test.ts packages/app/src/hooks/use-dictation.shared.test.ts packages/app/src/dictation/dictation-stream-sender.test.ts packages/app/src/dictation/dictation-stream-sender.bounded.test.ts packages/app/src/pi-workspace/android-visual-host.test.ts packages/desktop/src/features/pi-workspace-visuals.test.ts packages/desktop/src/preload-sandbox.test.ts --bail=1 --maxWorkers=1",
     "test": "npm run typecheck && npm run test:type-safety && npm run test:unit && npm run test:sdk && npm run test:rpc && npm run test:package && npm run test:host",
     "pack:dry-run": "npm pack --dry-run --ignore-scripts"
   },

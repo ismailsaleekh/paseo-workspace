@@ -8,6 +8,7 @@ import { AttemptGuard } from "@/utils/attempt-guard";
 import {
   DURATION_TICK_MS,
   PCM_DICTATION_FORMAT,
+  resolveFinalTranscript,
   toError,
   type DictationStatus,
   type UseDictationOptions,
@@ -33,7 +34,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<DictationStatus>("idle");
-  const latestPartialTranscriptRef = useRef("");
+  // Called when the bounded capture buffer is full; bound after the audio source exists.
+  const bufferFullRef = useRef<(error: Error) => void>(() => undefined);
 
   const onTranscriptRef = useRef(onTranscript);
   useEffect(() => {
@@ -82,6 +84,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       client,
       format: PCM_DICTATION_FORMAT,
       createDictationId: generateMessageId,
+      onBufferFull: (failure) => bufferFullRef.current(failure),
     });
   }
   useEffect(() => {
@@ -133,7 +136,6 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const clearStreamingState = useCallback(() => {
     senderRef.current?.clearAll();
-    latestPartialTranscriptRef.current = "";
     setPartialTranscript("");
   }, []);
 
@@ -142,8 +144,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   }, []);
 
   const ensureFinalTranscript = useCallback(async (finalSeq: number): Promise<string> => {
-    const result = await senderRef.current!.finish(finalSeq);
-    return result.text;
+    const sender = senderRef.current;
+    if (!sender) throw new Error("Dictation stream sender is unavailable");
+    const result = await sender.finish(finalSeq);
+    return resolveFinalTranscript(result.text);
   }, []);
 
   useEffect(() => {
@@ -179,30 +183,30 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         return;
       }
       const next = message.payload.text ?? "";
-      latestPartialTranscriptRef.current = next;
       setPartialTranscript(next);
       onPartialTranscriptRef.current?.(next, { requestId: generateMessageId() });
     });
   }, [client]);
 
   const handleStreamingTranscriptionSuccess = useCallback(
-    (text: string, requestId: string) => {
+    (transcriptText: string, requestId: string) => {
       setIsProcessing(false);
       isProcessingRef.current = false;
       setDuration(0);
       setStatus("idle");
-
-      const transcriptText =
-        text.trim().length > 0 ? text.trim() : latestPartialTranscriptRef.current.trim();
       clearStreamingState();
-
-      if (!transcriptText) {
-        return;
-      }
       onTranscriptRef.current?.(transcriptText, { requestId });
     },
     [clearStreamingState],
   );
+
+  const finishWithoutAudio = useCallback(() => {
+    setIsProcessing(false);
+    isProcessingRef.current = false;
+    setDuration(0);
+    setStatus("idle");
+    clearStreamingState();
+  }, [clearStreamingState]);
 
   const handleDictationFailure = useCallback(
     (failure: unknown) => {
@@ -246,6 +250,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   useEffect(() => {
     audioStopRef.current = audio.stop;
   }, [audio.stop]);
+  useEffect(() => {
+    bufferFullRef.current = (failure: Error) => {
+      if (!isRecordingRef.current) return;
+      stopDurationTracking();
+      void audioStopRef.current().catch((stopError: unknown) => {
+        reportError(stopError, "Failed to stop capture after the dictation buffer filled");
+      });
+      handleDictationFailure(failure);
+    };
+  }, [handleDictationFailure, reportError, stopDurationTracking]);
 
   const startDictation = useCallback(async () => {
     if (
@@ -366,7 +380,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
       const finalSeq = senderRef.current?.getFinalSeq() ?? -1;
       if (finalSeq < 0) {
-        handleStreamingTranscriptionSuccess("", generateMessageId());
+        finishWithoutAudio();
         return;
       }
 
@@ -384,6 +398,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   }, [
     audio,
     canConfirm,
+    finishWithoutAudio,
     handleDictationFailure,
     handleStreamingTranscriptionSuccess,
     stopDurationTracking,

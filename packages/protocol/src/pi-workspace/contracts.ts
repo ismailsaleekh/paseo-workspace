@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SPEECH_TEXT_CHARS, SpeechResultSchema } from "./speech.js";
 
 export const VISUAL_SOURCE_BYTES = 1024 * 1024;
 export const VISUAL_FRAME_BYTES = 4 * 1024 * 1024;
@@ -218,6 +219,15 @@ export const VisualLocalRequestSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
   z.object({ kind: z.literal("cancel"), requestId: z.string().uuid() }).strict(),
+  // Agent speech: one utterance of verbatim text, resolved after playback (see ./speech.ts).
+  z
+    .object({
+      kind: z.literal("speak"),
+      requestId: z.string().uuid(),
+      utterance: z.string().uuid(),
+      text: z.string().min(1).max(SPEECH_TEXT_CHARS),
+    })
+    .strict(),
 ]);
 export const VisualLocalResponseSchema = z.discriminatedUnion("kind", [
   z
@@ -230,6 +240,9 @@ export const VisualLocalResponseSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({ kind: z.literal("result"), requestId: z.string().uuid(), result: VisualResultSchema })
+    .strict(),
+  z
+    .object({ kind: z.literal("speech"), requestId: z.string().uuid(), result: SpeechResultSchema })
     .strict(),
   z
     .object({

@@ -8,12 +8,15 @@ import {
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import type { VisualObservation, VisualService } from "../../pi-workspace/service.js";
 import type { SessionDelivery } from "../owned-subscriptions/index.js";
+import type { ClientPresenceState } from "../../agent-attention-policy.js";
 
 export interface VisualSessionHost {
   service: VisualService | undefined;
   delivery: SessionDelivery;
   assertAgent(agentId: string): void;
   reply(message: SessionOutboundMessage): void;
+  /** The connection's latest `client_heartbeat` presence (focus, visibility, activity). */
+  presence(source: object): ClientPresenceState | null;
 }
 
 export class VisualSession {
@@ -64,6 +67,7 @@ export class VisualSession {
           agentId: message.agentId,
           source: owner.source,
           ...(message.platform === undefined ? {} : { platform: message.platform }),
+          presence: () => this.host.presence(source),
           emit: (event) =>
             owner.emit({
               type: "pi_workspace.update",

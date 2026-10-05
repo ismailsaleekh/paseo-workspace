@@ -1,6 +1,6 @@
-# Testing the visual workspace
+# Testing the visual workspace and agent speech
 
-Status: V2-A candidate on top of landed V2-D. A listed command is not a passing receipt; emulator acceptance requires the independent judge and an Accepted planc certificate, and physical HyperOS 3 / Android 16 verification is a separate later check.
+Status: S1 voice candidate on top of landed V2-D and V2-A. A listed command is not a passing receipt; emulator acceptance requires the independent judge and an Accepted planc certificate, and physical HyperOS 3 / Android 16 dictation and playback verification is a separate later check.
 
 ## Isolation and prerequisites
 
@@ -15,12 +15,14 @@ The task-owned npm cache is `/Users/lizavasilyeva/.cache/pi-paseo-workspace/npm`
 From the workspace root:
 
 ```sh
-node qa/pi-workspace/judge-v2-android.mjs
+node qa/pi-workspace/judge-s1.mjs
 ```
 
-The immutable judge prepares locked offline dependencies, applies reviewed patches, builds producers and desktop main, installs pinned Electron from its private cache, typechecks the app, runs the six prerequisite guards, builds the development-variant Paseo release APK (offline Gradle, embedded bundle) and the companion visual host APK, and checks the Android harness prerequisite on a freshly wiped judge emulator. It then runs the tool/package/V1-browser/V2-desktop checks and the Android flow: no-INTERNET visual host in its own UID, actual pixels twice, egress sinks, hang termination, background/foreground, host death, missing host (`RENDERER_UNAVAILABLE`), relaunch, and desktop + Android displays with addressed captures. It uses isolated homes, ports, userData, the dedicated judge AVD and the deterministic provider. A preparation failure is never an acceptable missing-feature baseline. One run takes roughly an hour; the judge AVD lock (`android-avd-judge/judge.lock`) prevents overlapping emulator runs and must not be removed while a judge runs.
+The immutable S1 judge runs the full V2-A preparation (locked offline dependencies, reviewed patches, producer and desktop builds, pinned Electron, app/desktop typechecks, prerequisite guards, Android APK builds and the Android harness prerequisite on a freshly wiped emulator) plus the desktop dictation prerequisite (Chromium fake microphone fed from `say` WAVs). It then checks `tool-contract.mjs --phase speech` (five visual tools + `speak`), package QA and pack, the V1 browser, V2-D desktop and V2-A Android regressions, the S1 desktop flow (`s1/run-s1.mjs`: faithful dictation with stable test ids, `speak` on the active desktop verified by an injected WebAudio tap and an independent local recogniser, stop within 300 ms, microphone/playback independence, dictation queued while busy, multi-minute dictation) and the S1 Android flow (`s1/run-s1-android.mjs`: playback observed through AudioService player state for the Paseo UID, stop, `CLIENT_UNAVAILABLE` when backgrounded, exactly one client with desktop + Android). Speech models come from the task-owned read-only copy `~/.cache/pi-paseo-workspace/speech-models/local-speech`; realtime voice mode stays disabled. A preparation failure is never an acceptable missing-feature baseline. One run takes roughly 90–120 minutes; the judge AVD lock (`android-avd-judge/judge.lock`) prevents overlapping emulator runs and must not be removed while a judge runs.
 
-The desktop-only judge `node qa/pi-workspace/judge-v2-desktop.mjs` remains the V2-D Root.
+The Android visual judge `node qa/pi-workspace/judge-v2-android.mjs` (V2-A Root) and the desktop-only judge `node qa/pi-workspace/judge-v2-desktop.mjs` (V2-D Root) remain available.
+
+Targeted S1 runs: `node qa/pi-workspace/tool-contract.mjs --phase speech`; `node qa/pi-workspace/s1/run-s1.mjs` (desktop, about 10 minutes, needs the prepared builds and Electron); `node qa/pi-workspace/android/build.mjs <out.json>` then `node qa/pi-workspace/s1/run-s1-android.mjs --build <out.json>`.
 
 The standalone V1 browser regression remains `node qa/pi-workspace/run-visual.mjs`. It is not Electron or Android proof. The desktop runner `node qa/pi-workspace/run-desktop.mjs` requires its prepared builds and pinned Electron; it is a targeted diagnostic, not a substitute for Root submission.
 
@@ -46,7 +48,7 @@ gradle -p packages/visual-host-android --offline --no-daemon assembleRelease \
 
 Native module changes need a rebuilt Paseo APK; Metro JS updates alone are not Android evidence.
 
-The package default QA includes strict source/test typecheck, type-escape audit, source/tool tests, real SDK/RPC scripted-provider checks, paired-artifact tests, and the explicitly listed host/controller/desktop feature suites. It does not run the whole monorepo suite. Use `test:unit`, `test:sdk`, `test:rpc`, `test:package` and `test:host` for targeted work. A single Vitest invocation may name related owned test files with `--bail=1 --maxWorkers=1`.
+The package default QA includes strict source/test typecheck, type-escape audit, source/tool/speak tests, real SDK/RPC scripted-provider checks, paired-artifact tests, and the explicitly listed host/controller/speech/dictation/desktop feature suites. It does not run the whole monorepo suite. Use `test:unit`, `test:sdk`, `test:rpc`, `test:package` and `test:host` for targeted work. A single Vitest invocation may name related owned test files with `--bail=1 --maxWorkers=1`.
 
 Use root `npm run format:files -- <exact changed paths>`, `format:check:files` and `lint` scripts. Never weaken lint/type rules, edit generated validators manually, run the complete upstream test suite, or use the unavailable macOS `timeout` command. The feature preload is compiled by the existing desktop tsconfig and has electron-only runtime imports.
 
@@ -60,4 +62,4 @@ Paired-artifact tests pack the fork protocol and Pi package, install both into a
 
 The real desktop oracle decodes a private motif absent from published state, checks multiple displays, observes TCP/UDP egress sinks, verifies renderer termination with a preserved composer draft, and relaunches with isolated userData. The Android oracle decodes the same motif from independent `adb` screencaps and from the Pi image, observes sinks reached through the emulator host alias, and treats any ANR dialog during feature checks as a failure. Read the complete saved log; neither exit 1 alone nor a source inspection identifies a valid feature failure. Supervisor-mediated probes may save full stdout/stderr outside the repository. Keep their unit/workspace binding and exact command with the receipt.
 
-No flake or unsupported target is silently waived. Physical HyperOS 3 / Android 16 evidence, speech, detours and deployment remain later gates. Do not mark those as passed from browser, Electron or emulator output.
+No flake or unsupported target is silently waived. Physical HyperOS 3 / Android 16 evidence (including dictation and audible playback with a real microphone and speaker), detours and deployment remain later gates. Do not mark those as passed from browser, Electron or emulator output.

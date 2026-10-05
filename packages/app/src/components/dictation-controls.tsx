@@ -194,6 +194,7 @@ export function DictationOverlay({
         disabled={actionsDisabled && !isFailed}
         accessibilityRole="button"
         accessibilityLabel={t("message.dictation.cancel")}
+        testID="dictation-cancel"
         style={overlayCancelButtonStyle}
       >
         <X size={theme.iconSize.lg} color={theme.colors.accentForeground} strokeWidth={2.5} />
@@ -241,6 +242,7 @@ export function DictationOverlay({
               onPress={onAccept}
               accessibilityRole="button"
               accessibilityLabel={t("message.dictation.insert")}
+              testID="dictation-insert"
               style={[overlayStyles.actionButton, OVERLAY_ACCEPT_BUTTON_BG]}
             >
               <Pencil

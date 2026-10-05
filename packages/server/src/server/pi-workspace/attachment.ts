@@ -15,11 +15,19 @@ import {
   type VisualOwner,
   type VisualResult,
 } from "@getpaseo/protocol/pi-workspace/contracts";
+import {
+  SPEECH_OPERATION_TIMEOUT_MS,
+  type SpeechResult,
+} from "@getpaseo/protocol/pi-workspace/speech";
 
 export interface VisualRuntimeLease {
   readonly env: { PI_WORKSPACE_SOCKET: string; PI_WORKSPACE_CAPABILITY: string };
   activate(readSessionId: () => Promise<string>): void;
   revoke(): void;
+}
+export interface VisualSpeakRequest {
+  utterance: string;
+  text: string;
 }
 export interface VisualAttachmentHost {
   execute(
@@ -27,6 +35,12 @@ export interface VisualAttachmentHost {
     operation: VisualOperation,
     signal: AbortSignal,
   ): Promise<VisualResult>;
+  /** Agent speech; absent on hosts without speech, which then report SPEECH_UNAVAILABLE. */
+  speak?(
+    owner: VisualOwner,
+    request: VisualSpeakRequest,
+    signal: AbortSignal,
+  ): Promise<SpeechResult>;
   reportFailure(error: unknown): void;
 }
 interface Grant {
@@ -255,37 +269,28 @@ export class VisualAttachmentBridge {
             );
           } else if (frame.kind === "cancel") {
             peer.pending.get(frame.requestId)?.abort();
-          } else {
-            if (!peer.grant || !peer.sessionId)
-              throw new VisualFailure("UNATTACHED", "Visual request precedes verified attachment");
-            if (peer.requests.has(frame.requestId))
-              throw new VisualFailure(
-                "DUPLICATE_REQUEST",
-                "Visual request identity was already used",
-              );
-            if (peer.requests.size >= 4096 || peer.pending.size >= 64)
-              throw new VisualFailure("BUSY", "Visual attachment request limit reached; reconnect");
-            peer.requests.add(frame.requestId);
-            const controller = new AbortController();
-            peer.pending.set(frame.requestId, controller);
-            const timeout = setTimeout(
-              () => controller.abort(),
-              VISUAL_OPERATION_TIMEOUT_MS - 1000,
+          } else if (frame.kind === "speak") {
+            const request = { utterance: frame.utterance, text: frame.text };
+            this.begin(
+              peer,
+              frame.requestId,
+              SPEECH_OPERATION_TIMEOUT_MS - 1000,
+              async (signal) => {
+                const result = await this.speak(peer, request, signal);
+                return { kind: "speech", requestId: frame.requestId, result };
+              },
             );
-            void this.execute(peer, frame.operation, controller.signal)
-              .then(
-                (result) => {
-                  if (peer.active)
-                    this.send(peer, { kind: "result", requestId: frame.requestId, result });
-                  return undefined;
-                },
-                (error: unknown) => this.respondFailure(peer, frame.requestId, error),
-              )
-              .catch((error: unknown) => this.host.reportFailure(error))
-              .finally(() => {
-                clearTimeout(timeout);
-                peer.pending.delete(frame.requestId);
-              });
+          } else {
+            const operation = frame.operation;
+            this.begin(
+              peer,
+              frame.requestId,
+              VISUAL_OPERATION_TIMEOUT_MS - 1000,
+              async (signal) => {
+                const result = await this.execute(peer, operation, signal);
+                return { kind: "result", requestId: frame.requestId, result };
+              },
+            );
           }
           end = buffered.indexOf("\n");
         }
@@ -300,6 +305,38 @@ export class VisualAttachmentBridge {
         this.disconnect(peer);
       }
     });
+  }
+
+  /** Runs one correlated request with its own cancellation and time bound. */
+  private begin(
+    peer: Peer,
+    requestId: string,
+    timeoutMs: number,
+    run: (signal: AbortSignal) => Promise<VisualLocalResponse>,
+  ): void {
+    if (!peer.grant || !peer.sessionId)
+      throw new VisualFailure("UNATTACHED", "Visual request precedes verified attachment");
+    if (peer.requests.has(requestId))
+      throw new VisualFailure("DUPLICATE_REQUEST", "Visual request identity was already used");
+    if (peer.requests.size >= 4096 || peer.pending.size >= 64)
+      throw new VisualFailure("BUSY", "Visual attachment request limit reached; reconnect");
+    peer.requests.add(requestId);
+    const controller = new AbortController();
+    peer.pending.set(requestId, controller);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    void run(controller.signal)
+      .then(
+        (response) => {
+          if (peer.active) this.send(peer, response);
+          return undefined;
+        },
+        (error: unknown) => this.respondFailure(peer, requestId, error),
+      )
+      .catch((error: unknown) => this.host.reportFailure(error))
+      .finally(() => {
+        clearTimeout(timeout);
+        peer.pending.delete(requestId);
+      });
   }
 
   private async attach(peer: Peer, capability: string, sessionId: string): Promise<void> {
@@ -331,14 +368,44 @@ export class VisualAttachmentBridge {
     operation: VisualOperation,
     signal: AbortSignal,
   ): Promise<VisualResult> {
+    const owner = await this.owner(peer, signal);
+    return this.host.execute(owner, operation, signal);
+  }
+
+  private async speak(
+    peer: Peer,
+    request: VisualSpeakRequest,
+    signal: AbortSignal,
+  ): Promise<SpeechResult> {
+    const owner = await this.owner(peer, signal, request.utterance);
+    if (!this.host.speak)
+      throw new VisualFailure(
+        "SPEECH_UNAVAILABLE",
+        "This Paseo host does not provide agent speech",
+        request.utterance,
+      );
+    return this.host.speak(owner, request, signal);
+  }
+
+  /** The verified owner of a request, rechecked against the actual Pi session. */
+  private async owner(
+    peer: Peer,
+    signal: AbortSignal,
+    artifactId: string | null = null,
+  ): Promise<VisualOwner> {
     const grant = peer.grant;
     const sessionId = peer.sessionId;
     if (!grant || grant.revoked || !grant.readSessionId || !sessionId)
-      throw new VisualFailure("STALE_RUNTIME", "Visual runtime is no longer attached");
+      throw new VisualFailure("STALE_RUNTIME", "Visual runtime is no longer attached", artifactId);
     const actualSessionId = await grant.readSessionId();
     if (!peer.active || grant.revoked || actualSessionId !== sessionId)
-      throw new VisualFailure("STALE_SESSION", "Visual request belongs to a previous Pi session");
-    if (signal.aborted) throw new VisualFailure("CANCELLED", "Visual operation was cancelled");
-    return this.host.execute({ agentId: grant.agentId, sessionId }, operation, signal);
+      throw new VisualFailure(
+        "STALE_SESSION",
+        "Visual request belongs to a previous Pi session",
+        artifactId,
+      );
+    if (signal.aborted)
+      throw new VisualFailure("CANCELLED", "Visual operation was cancelled", artifactId);
+    return { agentId: grant.agentId, sessionId };
   }
 }

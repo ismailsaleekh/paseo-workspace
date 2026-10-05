@@ -12,6 +12,10 @@ import {
   type VisualOperation,
   type VisualResult,
 } from "@getpaseo/protocol/pi-workspace/contracts";
+import {
+  SPEECH_OPERATION_TIMEOUT_MS,
+  type SpeechResult,
+} from "@getpaseo/protocol/pi-workspace/speech";
 
 export interface VisualAttachmentConfig {
   socketPath: string;
@@ -20,8 +24,16 @@ export interface VisualAttachmentConfig {
 export interface VisualToolConnection {
   request(operation: VisualOperation, signal?: AbortSignal): Promise<VisualResult>;
 }
+export interface SpeakRequest {
+  utterance: string;
+  text: string;
+}
+export interface SpeechToolConnection {
+  speak(request: SpeakRequest, signal?: AbortSignal): Promise<SpeechResult>;
+}
+type ResultFrame = Extract<VisualLocalResponse, { kind: "result" | "speech" }>;
 interface PendingRequest {
-  resolve(result: VisualResult): void;
+  resolve(frame: ResultFrame): void;
   reject(error: VisualFailure): void;
   cleanup(): void;
 }
@@ -38,7 +50,7 @@ interface LiveConnection {
 }
 
 /** A lazy connection: session_start never waits for the provider's startup get_state RPC. */
-export class VisualConnection implements VisualToolConnection {
+export class VisualConnection implements VisualToolConnection, SpeechToolConnection {
   private live: LiveConnection | null = null;
   private sessionId: string | null = null;
 
@@ -189,7 +201,7 @@ export class VisualConnection implements VisualToolConnection {
     pending.cleanup();
     if (frame.kind === "error")
       pending.reject(new VisualFailure(frame.error.code, frame.error.message, frame.artifactId));
-    else pending.resolve(frame.result);
+    else pending.resolve(frame);
   }
 
   private send(live: LiveConnection, frame: VisualLocalRequest): void {
@@ -204,16 +216,56 @@ export class VisualConnection implements VisualToolConnection {
   }
 
   async request(operation: VisualOperation, signal?: AbortSignal): Promise<VisualResult> {
-    if (signal?.aborted) throw new VisualFailure("CANCELLED", "Visual operation was cancelled");
+    const frame = await this.exchange(
+      (requestId) => ({ kind: "request", requestId, operation }),
+      VISUAL_OPERATION_TIMEOUT_MS,
+      signal,
+    );
+    if (frame.kind !== "result")
+      throw new VisualFailure("INVALID_REPLY", "Host answered a visual request with speech");
+    return frame.result;
+  }
+
+  /** One utterance; resolves only with the host's terminal playback outcome. */
+  async speak(request: SpeakRequest, signal?: AbortSignal): Promise<SpeechResult> {
+    const frame = await this.exchange(
+      (requestId) => ({
+        kind: "speak",
+        requestId,
+        utterance: request.utterance,
+        text: request.text,
+      }),
+      SPEECH_OPERATION_TIMEOUT_MS,
+      signal,
+      request.utterance,
+    );
+    if (frame.kind !== "speech")
+      throw new VisualFailure(
+        "INVALID_REPLY",
+        "Host answered a speech request with a visual result",
+        request.utterance,
+      );
+    return frame.result;
+  }
+
+  private async exchange(
+    build: (requestId: string) => VisualLocalRequest,
+    timeoutMs: number,
+    signal: AbortSignal | undefined,
+    artifactId: string | null = null,
+  ): Promise<ResultFrame> {
+    if (signal?.aborted)
+      throw new VisualFailure("CANCELLED", "Visual operation was cancelled", artifactId);
     const live = this.connect();
     await live.ready;
-    if (signal?.aborted) throw new VisualFailure("CANCELLED", "Visual operation was cancelled");
+    if (signal?.aborted)
+      throw new VisualFailure("CANCELLED", "Visual operation was cancelled", artifactId);
     if (live.ended || live !== this.live)
-      throw new VisualFailure("DISCONNECTED", "Visual attachment changed");
+      throw new VisualFailure("DISCONNECTED", "Visual attachment changed", artifactId);
     if (live.pending.size >= 64)
-      throw new VisualFailure("BUSY", "Too many pending visual operations");
+      throw new VisualFailure("BUSY", "Too many pending visual operations", artifactId);
     const requestId = randomUUID();
-    return new Promise<VisualResult>((resolve, reject) => {
+    return new Promise<ResultFrame>((resolve, reject) => {
       const cancel = (code: "CANCELLED" | "TIMEOUT") => {
         const pending = live.pending.get(requestId);
         if (!pending) return;
@@ -225,6 +277,7 @@ export class VisualConnection implements VisualToolConnection {
             code === "TIMEOUT"
               ? "Visual operation timed out; inspect before retrying a mutation"
               : "Visual operation was cancelled",
+            artifactId,
           ),
         );
         try {
@@ -235,7 +288,7 @@ export class VisualConnection implements VisualToolConnection {
         }
       };
       const abort = () => cancel("CANCELLED");
-      const timer = setTimeout(() => cancel("TIMEOUT"), VISUAL_OPERATION_TIMEOUT_MS);
+      const timer = setTimeout(() => cancel("TIMEOUT"), timeoutMs);
       const cleanup = () => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
@@ -243,7 +296,7 @@ export class VisualConnection implements VisualToolConnection {
       live.pending.set(requestId, { resolve, reject, cleanup });
       signal?.addEventListener("abort", abort, { once: true });
       try {
-        this.send(live, { kind: "request", requestId, operation });
+        this.send(live, build(requestId));
       } catch (error) {
         live.pending.delete(requestId);
         cleanup();

@@ -725,6 +725,7 @@ function VoiceButtonTooltip({
         disabled={!isDictationStartEnabled}
         accessibilityRole="button"
         accessibilityLabel={voiceButtonAccessibilityLabel}
+        testID="dictation-toggle"
         style={voiceButtonStyle}
       >
         {renderVoiceButtonIcon}

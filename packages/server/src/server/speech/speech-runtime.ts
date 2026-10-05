@@ -344,6 +344,8 @@ export interface SpeechService {
   resolveStt: () => SpeechToTextProvider | null;
   resolveSttLanguage: () => string;
   resolveTts: () => TextToSpeechProvider | null;
+  /** Local TTS for Pi agent speech, independent of realtime voice mode. */
+  resolveAgentSpeechTts?: () => TextToSpeechProvider | null;
   resolveTurnDetection: () => TurnDetectionProvider | null;
   resolveDictationStt: () => SpeechToTextProvider | null;
   resolveDictationSttLanguage: () => string;
@@ -391,6 +393,7 @@ export function createSpeechService(params: {
   } | null = null;
   let localCleanup = () => {};
   let localVoiceTtsProvider: TextToSpeechProvider | null = null;
+  let agentSpeechTtsService: TextToSpeechProvider | null = null;
 
   let missingLocalModelIds: LocalSpeechModelId[] = [];
   let backgroundDownloadInProgress = false;
@@ -524,6 +527,7 @@ export function createSpeechService(params: {
     dictationSttService = nextOpenAiSpeech.dictationSttService;
     localModelConfig = nextLocalSpeech.localModelConfig;
     localVoiceTtsProvider = nextLocalSpeech.localVoiceTtsProvider;
+    agentSpeechTtsService = nextLocalSpeech.agentSpeechTtsService;
     localCleanup = nextLocalSpeech.cleanup;
     previousLocalCleanup();
 
@@ -722,6 +726,8 @@ export function createSpeechService(params: {
     resolveStt: () => sttService,
     resolveSttLanguage: () => speechConfig?.sttLanguages?.voice ?? "en",
     resolveTts: () => ttsService,
+    /** Local TTS for Pi agent speech; never a cloud provider and never realtime voice mode. */
+    resolveAgentSpeechTts: () => agentSpeechTtsService,
     resolveDictationStt: () => dictationSttService,
     resolveDictationSttLanguage: () => speechConfig?.sttLanguages?.dictation ?? "en",
     getReadiness: () => lastPublishedReadinessSnapshot ?? computeReadinessSnapshot(),

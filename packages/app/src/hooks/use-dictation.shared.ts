@@ -33,6 +33,26 @@ export interface UseDictationResult {
 export const DURATION_TICK_MS = 1000;
 export const PCM_DICTATION_FORMAT = "audio/pcm;rate=16000;bits=16";
 
+/** The engine finished a dictation without any final words; provisional text is never inserted instead. */
+export class BlankFinalTranscriptError extends Error {
+  constructor() {
+    super(
+      "No final transcript was recognized for this dictation. Provisional text was not inserted; retry or cancel.",
+    );
+    this.name = "BlankFinalTranscriptError";
+  }
+}
+
+/**
+ * The composer receives exactly the engine's final transcript. Only surrounding whitespace is
+ * normalised; a blank final is an explicit error, never replaced by the latest partial.
+ */
+export function resolveFinalTranscript(engineText: string): string {
+  const text = engineText.trim();
+  if (text.length === 0) throw new BlankFinalTranscriptError();
+  return text;
+}
+
 export const toError = (error: unknown): Error => {
   if (error instanceof Error) {
     return error;

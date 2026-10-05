@@ -4,6 +4,28 @@ import { i18n } from "@/i18n/i18next";
 
 const MAX_CHUNKS_PER_FLUSH_TURN = 128;
 const DICTATION_DRAIN_IDLE_TIMEOUT_MS = 30_000;
+/**
+ * Upper bound on PCM retained for replay (30 minutes of 16 kHz mono PCM16). Audio streams to the
+ * daemon as it is captured; the retained copy only exists so a reconnect or retry can replay it.
+ */
+export const DICTATION_MAX_BUFFERED_PCM_BYTES = 16_000 * 2 * 60 * 30;
+
+/** Capture reached the bounded replay buffer; later audio is refused, never silently dropped. */
+export class DictationBufferFullError extends Error {
+  constructor(readonly limitBytes: number) {
+    super(
+      `Dictation reached its ${Math.round(limitBytes / (16_000 * 2 * 60))}-minute buffer; recording stopped. Insert by retrying, or cancel.`,
+    );
+    this.name = "DictationBufferFullError";
+  }
+}
+
+function base64DecodedBytes(base64: string): number {
+  let padding = 0;
+  if (base64.endsWith("==")) padding = 2;
+  else if (base64.endsWith("=")) padding = 1;
+  return Math.floor((base64.length * 3) / 4) - padding;
+}
 
 const waitForNextFlushTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -29,6 +51,10 @@ export interface DictationStreamSenderParams {
   client: DictationStreamClient | null;
   format: string;
   createDictationId?: () => string;
+  /** Retained PCM bound in decoded bytes; defaults to {@link DICTATION_MAX_BUFFERED_PCM_BYTES}. */
+  maxBufferedBytes?: number;
+  /** Called once when a segment would exceed the bound; the segment and later ones are refused. */
+  onBufferFull?: (error: DictationBufferFullError) => void;
 }
 
 interface DictationFinishResult {
@@ -52,6 +78,10 @@ export class DictationStreamSender {
   private client: DictationStreamClient | null = null;
   private readonly format: string;
   private readonly createDictationId: () => string;
+  private readonly maxBufferedBytes: number;
+  private readonly onBufferFull: ((error: DictationBufferFullError) => void) | null;
+  private bufferedBytes = 0;
+  private bufferFull = false;
 
   private dictationId: string | null = null;
   private sendSeq = 0;
@@ -68,6 +98,8 @@ export class DictationStreamSender {
   constructor(params: DictationStreamSenderParams) {
     this.format = params.format;
     this.createDictationId = params.createDictationId ?? generateMessageId;
+    this.maxBufferedBytes = params.maxBufferedBytes ?? DICTATION_MAX_BUFFERED_PCM_BYTES;
+    this.onBufferFull = params.onBufferFull ?? null;
     this.setClient(params.client);
   }
 
@@ -103,6 +135,15 @@ export class DictationStreamSender {
     return this.segments.length;
   }
 
+  /** Decoded PCM bytes currently retained for replay. */
+  getBufferedBytes(): number {
+    return this.bufferedBytes;
+  }
+
+  isBufferFull(): boolean {
+    return this.bufferFull;
+  }
+
   dispose(): void {
     this.setClient(null);
   }
@@ -118,6 +159,8 @@ export class DictationStreamSender {
   clearAll(): void {
     this.resetStreamForReplay();
     this.segments = [];
+    this.bufferedBytes = 0;
+    this.bufferFull = false;
   }
 
   resetStreamForReplay(): void {
@@ -131,12 +174,22 @@ export class DictationStreamSender {
     this.resolveDrainWaiters();
   }
 
-  enqueueSegment(base64Pcm: string): void {
+  /** Returns false when the bounded buffer refused the segment (reported once via onBufferFull). */
+  enqueueSegment(base64Pcm: string): boolean {
+    const bytes = base64DecodedBytes(base64Pcm);
+    if (this.bufferFull || this.bufferedBytes + bytes > this.maxBufferedBytes) {
+      if (!this.bufferFull) {
+        this.bufferFull = true;
+        this.onBufferFull?.(new DictationBufferFullError(this.maxBufferedBytes));
+      }
+      return false;
+    }
     this.segments.push(base64Pcm);
+    this.bufferedBytes += bytes;
 
     const client = this.client;
     if (!client?.isConnected) {
-      return;
+      return true;
     }
 
     if (!this.dictationId) {
@@ -145,10 +198,11 @@ export class DictationStreamSender {
           console.error("[DictationStreamSender] Failed to start stream from enqueue", error);
         });
       }
-      return;
+      return true;
     }
 
     this.flush();
+    return true;
   }
 
   flush(): number {
