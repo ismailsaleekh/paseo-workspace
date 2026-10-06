@@ -17,7 +17,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "@playwright/test";
-import { connectClient, freePort, sleep, waitFor } from "../android/lib.mjs";
+import { connectClient, freePort, sleep, stopChild, waitFor } from "../android/lib.mjs";
 
 const repository = process.cwd();
 const prerequisiteOnly = process.argv.includes("--prerequisite");
@@ -344,7 +344,7 @@ try {
     },
   );
   closeSync(metroLog);
-  cleanups.push(async () => metro.kill("SIGTERM"));
+  cleanups.push(() => stopChild(metro, "Metro"));
   await waitFor("Metro", async () => (await fetch(`http://127.0.0.1:${metroPort}/status`)).ok, {
     timeout: 120_000,
     interval: 1000,

@@ -196,6 +196,26 @@ async function portInUse(port) {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Stops a child process within a bound: SIGTERM, up to `graceMs` for it to exit, then SIGKILL. A
+ * child that ignores both is reported and unreferenced, so a stuck bundler can never keep a judge
+ * flow (and with it the whole Root) alive.
+ */
+export async function stopChild(child, label, graceMs = 10_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  await Promise.race([exited, sleep(graceMs)]);
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  process.stdout.write(`${label} ignored SIGTERM for ${graceMs} ms; sending SIGKILL\n`);
+  child.kill("SIGKILL");
+  await Promise.race([exited, sleep(5_000)]);
+  if (child.exitCode === null && child.signalCode === null) {
+    process.stdout.write(`${label} survived SIGKILL; detaching it\n`);
+    child.unref();
+  }
+}
+
 export async function waitFor(label, probe, { timeout = 30_000, interval = 500 } = {}) {
   const started = Date.now();
   let last;

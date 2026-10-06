@@ -24,6 +24,7 @@ import {
   sleep,
   startEmulator,
   startIsolatedDaemon,
+  stopChild,
   waitFor,
   writeFile,
 } from "../android/lib.mjs";
@@ -402,7 +403,7 @@ try {
         },
       );
       closeSync(log);
-      cleanups.push(async () => metro.kill("SIGTERM"));
+      cleanups.push(() => stopChild(metro, "Metro"));
       await waitFor("Metro", async () => (await fetch(`http://127.0.0.1:${metroPort}/status`)).ok, {
         timeout: 120_000,
         interval: 1000,
