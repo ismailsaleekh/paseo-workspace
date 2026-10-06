@@ -530,7 +530,7 @@ try {
   } else {
     const paseoPid = device.pid(PASEO_PACKAGE);
     const anrBaseline = device.anrCount;
-    selectJudgeIme(device);
+    await selectJudgeIme(device);
     await settle();
     const id = keyboardVisual.id;
 

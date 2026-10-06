@@ -139,9 +139,20 @@ export function judgeImeApk() {
   return apk;
 }
 
-/** Installs, enables and selects the judge keyboard, and lets it show with the hardware keyboard. */
-export function selectJudgeIme(device) {
+/**
+ * Installs, enables and selects the judge keyboard, and lets it show with the hardware keyboard.
+ * `adb install` reports Success before Android's input-method service has registered the new
+ * keyboard: its package monitor runs asynchronously (measured 149–868 ms on the API 36 AVD), and
+ * `ime enable` sent before that fails with "Unknown input method". Wait, bounded, until the service
+ * lists the keyboard; a keyboard that never registers fails loudly.
+ */
+export async function selectJudgeIme(device) {
   device.install(judgeImeApk());
+  await waitFor(
+    "judge keyboard registered with the input-method service",
+    () => (device.tryShell(["ime", "list", "-a", "-s"]) ?? "").split("\n").includes(IME_COMPONENT),
+    { timeout: 30_000, interval: 250 },
+  );
   device.shell(["settings", "put", "secure", "show_ime_with_hard_keyboard", "1"]);
   device.shell(["ime", "enable", IME_COMPONENT]);
   device.shell(["ime", "set", IME_COMPONENT]);
