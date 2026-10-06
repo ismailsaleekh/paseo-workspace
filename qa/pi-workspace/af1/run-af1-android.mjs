@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync, readFileSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { completeLogLines } from "./log-lines.mjs";
 import {
   COMPANION_PACKAGE,
   PASEO_PACKAGE,
@@ -207,7 +208,7 @@ try {
   );
   closeSync(companionLogFile);
   cleanups.push(trackChild(companionLog, "companion logcat"));
-  const companionLines = () => readFileSync(companionLogPath, "utf8").split("\n");
+  const companionLines = () => completeLogLines(readFileSync(companionLogPath, "utf8"));
 
   const client = await connectClient(daemon.port);
   cleanups.push(() => client.close());

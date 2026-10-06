@@ -100,6 +100,11 @@ const preparation = [
     ["qa/pi-workspace/android/build.mjs", buildResult],
   ],
   [
+    "AF1 incremental log reader guard",
+    process.execPath,
+    ["--test", "--test-force-exit", "qa/pi-workspace/af1/log-lines.test.mjs"],
+  ],
+  [
     "AF1 harness prerequisite",
     process.execPath,
     ["qa/pi-workspace/af1/run-af1-android.mjs", "--prerequisite", "--build", buildResult],

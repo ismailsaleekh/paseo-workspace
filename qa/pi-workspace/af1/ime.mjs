@@ -13,6 +13,7 @@ import {
   rmSync,
 } from "node:fs";
 import path from "node:path";
+import { completeLogLines } from "./log-lines.mjs";
 import {
   androidEnv,
   cache,
@@ -179,8 +180,7 @@ export function startImeLog(device, dir) {
 /** All judge keyboard log lines so far, parsed, in order. */
 export function imeLog() {
   if (!imeLogPath) fail("judge keyboard log not started");
-  return readFileSync(imeLogPath, "utf8")
-    .split("\n")
+  return completeLogLines(readFileSync(imeLogPath, "utf8"))
     .map((line) => line.trim())
     .filter((line) => /^(CREATED|START|SHOWN|HIDDEN|RESULT)\b/.test(line))
     .map((line) =>
