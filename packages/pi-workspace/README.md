@@ -1,6 +1,6 @@
 # Pi workspace visual tools and agent speech
 
-Internal implementation for the paired Paseo fork (V2-D desktop and V2-A Android landed; S1 voice in this candidate). **S1 acceptance, physical HyperOS 3 / Android 16 dictation/playback verification and deployment readiness remain pending until the independent judge, planc submission and the device check pass.** This extends the existing Pi conversation; it adds no model router or replacement agent.
+Internal implementation for the paired Paseo fork (V2-D desktop, V2-A Android and S1 voice landed; B1 conversation detours in this candidate). **B1 acceptance, physical HyperOS 3 / Android 16 verification and deployment readiness remain pending until the independent judge, planc submission and the device check pass.** This extends the existing Pi conversation; it adds no model router or replacement agent.
 
 ## Install the paired artifacts
 
@@ -19,7 +19,7 @@ Loading outside a compatible Paseo host registers the tools without starting a d
 
 ## Tools
 
-Six direct model-callable tools; no branch stubs:
+Eight direct model-callable tools:
 
 | Tool | Arguments | Responsibility |
 | --- | --- | --- |
@@ -29,6 +29,8 @@ Six direct model-callable tools; no branch stubs:
 | `visual_inspect` | `{id?,screenshot?,client?}` | Inspect the active display, or the exact opaque client returned by an earlier inspection |
 | `visual_list` | `{cursor?}` | List up to 50 saved artifacts in the bound conversation |
 | `speak` | `{text}` | Speak the agent's own words aloud on the one app client showing the conversation |
+| `branch_open` | `{title, purpose?, answer_now?}` | Open a conversation detour in the same Pi session |
+| `branch_return` | `{notes, artifacts?}` | Return from the innermost detour, keeping only the supplied notes |
 
 Exactly one source is accepted. A file is one explicitly named regular UTF-8 file, relative to the actual Pi cwd when not absolute. Symlinks and directories are refused. Inline/file sources share a 1 MiB UTF-8 bound, without truncation. Tools never scan directories, build projects, fetch assets, start document servers, run shell commands or invoke models.
 
@@ -76,6 +78,23 @@ The tool resolves only from the client's own playback report:
 Failure codes include `CLIENT_UNAVAILABLE` (no app shows the conversation), `TTS_UNAVAILABLE` (no local engine), `TTS_FAILED`, `CLIENT_DISCONNECTED` (the playing display went away), `SPEECH_TIMEOUT`, `PLAYBACK_FAILED`, `PLAYBACK_DRAIN_TIMEOUT` (the device did not finish playing in time), `CANCELLED` and `HOST_UNAVAILABLE` (no attached Paseo). Enqueueing or delivering audio is never reported as completion.
 
 The app shows a **Stop speech** control (`speech-stop`) while speech plays, on desktop and Android. Stop is local and immediate: queued audio is dropped, the playing chunk is stopped and every later frame of that utterance is ignored; the daemon then stops synthesizing the remaining sentences. Stop never aborts the agent run, never changes the composer draft and never touches the microphone; dictation and playback are independent. On Android the audio engine starts only when speech arrives and releases its player when idle, so no player stays started outside speech.
+
+## Conversation detours (`branch_open`, `branch_return`)
+
+A detour is a side conversation inside the **same** Pi process and session file, built on Pi's native session tree: no new session, Git branch, second agent or summary model.
+
+- `branch_open({title, purpose?, answer_now?})`: title 1–120 characters, purpose at most 2,000; `answer_now: true` (only with a purpose) asks for the purpose to be answered right away.
+- `branch_return({notes, artifacts?})`: notes 1–20,000 characters; `artifacts` are up to 20 visual artifact IDs of this conversation.
+
+Both must be the **only tool call** of their assistant message. In a mixed batch the branch call fails with `BRANCH_REQUIRES_SOLE_CALL` before any side effect and every sibling call runs normally. A valid call returns `{kind:"branch", status:"queued", operation, checkpoint, request}` with Pi's `terminate:true`, so the agent yields without another model request; queued is not committed. Call-time errors are ordinary tool errors (`HOST_UNAVAILABLE` first without an attached Paseo, then `BRANCH_REQUIRES_SOLE_CALL`, `INVALID_ARGUMENT`, `NO_ACTIVE_DETOUR`), so the agent continues normally.
+
+**Open** commits at Pi's final settle boundary (`agent_before_settle`), after every sibling result is persisted: a non-message `custom` entry `pi-workspace/branch-checkpoint` at the leaf, then a visible `custom_message` `pi-workspace/branch-opened` (title and purpose) as its child. Tools, model, configuration and history are inherited. Only with `answer_now: true` does exactly one ordinary continuation of the same agent run after the marker to start answering the purpose; a purpose alone is recorded in the marker and no model request follows.
+
+**Return** needs Pi's command-only tree navigation, so the attached host runs the internal command `/pi-workspace-branch` after the agent settles. It navigates to the stored checkpoint with `summarize:false`, then appends one visible `custom_message` `pi-workspace/branch-notes` containing only the notes and artifact IDs, and a `custom` completion entry `pi-workspace/branch-returned`. The detour stays in the Pi tree and its artifacts stay listable and reopenable by ID. Detours nest; each return goes back exactly one level.
+
+Commit-time failures leave the branch position unchanged and append one visible `custom_message` `pi-workspace/branch-status` with the code: `BRANCH_CANCELLED` (an extension cancelled navigation, or the run was aborted before an open committed) or `BRANCH_STALE` (the checkpoint is no longer the open detour of the current branch). No notes or completion entry are appended. Every operation has an ID recorded in its entries, so a retried commit appends nothing twice.
+
+Detour state is read from these entries on the current branch, never from memory, so a detour stays returnable after the daemon, app or Pi restarts. Paseo completes the turn only after the transition and a timeline replacement from Pi's active branch, so its timeline (daemon API and app, also after reload) equals the active branch and input sent afterwards is delivered once, on the new branch. Visuals and background work are not touched.
 
 ## Dictation
 

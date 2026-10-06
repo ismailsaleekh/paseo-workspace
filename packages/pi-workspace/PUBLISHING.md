@@ -1,6 +1,6 @@
 # Paired internal artifacts
 
-Status: S1 voice candidate on top of landed V2-D and V2-A, not a production release. No installation into the active Pi/Paseo setup or onto the operator's phone is authorized by this document.
+Status: B1 conversation-detour candidate on top of landed V2-D, V2-A and S1, not a production release. No installation into the active Pi/Paseo setup or onto the operator's phone is authorized by this document.
 
 ## Artifact identity
 
@@ -10,13 +10,15 @@ The Pi package ships `extensions/` and runtime `src/` files. Runtime imports mus
 
 The fork protocol tarball must include compiled `dist/pi-workspace/contracts.js`, `dist/pi-workspace/speech.js`, declarations and all transitive runtime imports. Agent speech needs the paired daemon (local speech models configured; realtime voice mode is not required) and an app build from the same tree; older apps never announce speech playback and are never chosen. Desktop additionally needs its compiled guest preload and Electron-flavored app bundle. Android needs two APKs from the same tree, signed with the same key: the Paseo app (with the `paseo-visual-host` module) and its companion visual host (`packages/visual-host-android`, `<paseo id>.visualhost`, no INTERNET permission). A Paseo APK without a matching companion reports `RENDERER_UNAVAILABLE`; it has no in-app renderer. Browser-only package loading is not desktop or Android delivery evidence.
 
+Conversation detours (`branch_open`/`branch_return`) need the paired daemon's Pi provider from the same tree: it commits queued returns through the package's internal `/pi-workspace-branch` command after the agent settles and replaces the timeline from Pi's active branch. An older daemon would leave queued returns uncommitted.
+
 ## Required evidence
 
-1. Obtain the S1 Accepted certificate and supervisor audit of candidate tree, exact diff, protected files and scope. V1, V2-D and V2-A acceptance are not S1 acceptance. Stop at Accepted until the supervisor authorizes Land.
+1. Obtain the B1 Accepted certificate and supervisor audit of candidate tree, exact diff, protected files and scope. V1, V2-D, V2-A and S1 acceptance are not B1 acceptance. Stop at Accepted until the supervisor authorizes Land.
 2. Record the accepted candidate tree and SHA-256 of both tarballs in the release receipt. Build/pack from that tree, not from upstream registry artifacts.
 3. Verify paired contents and install both exact tarballs into one isolated directory with lifecycle scripts and peer auto-installation disabled. Require no workspace symlinks or undeclared source imports.
 4. Execute the installed extension through real Pi, using isolated state and the deterministic provider. A checkout-source load is not this witness.
-5. Require strict typecheck, type-escape audit, unit/SDK/RPC/package/host tests, scoped format/lint, dry pack and the independent S1 Root, including V1/V2-D/V2-A preservation, `speak` and dictation on desktop and agent speech on the Android emulator.
+5. Require strict typecheck, type-escape audit, unit/SDK/RPC/package/host tests, scoped format/lint, dry pack and the independent B1 Root, including the default eight-tool contract, the B1 browser detour flow and V1/V2-D/V2-A/S1 preservation.
 6. Distribute only identified paired internal artifacts. An independently published package needs a distinct fork protocol identity/version and a separately reviewed packaging change.
 
 Use the private task cache for offline packaging tests. Never repair the global npm cache or silently substitute an online dependency.
@@ -25,4 +27,4 @@ Use the private task cache for offline packaging tests. Never repair the global 
 
 The certificate covers the isolated checkout runtime and the emulator tested by the judge. Packaged deployment, reversible installation, existing-profile coexistence and joint operator try-out remain separate checks. Do not replace the installed Paseo app, restart the production daemon or install on the operator's phone as part of certification.
 
-Physical HyperOS 3 / Android 16 verification (both development APKs beside the existing Paseo, binding under HyperOS policies, pixels, egress, hang, lifecycle, dictation with the real microphone and audible speech with stop) is mandatory after the emulator Root and is not replaced by it. B1 native Pi detours remain required. None is closed by emulator or desktop output, browser screenshots, module compilation or a package manifest.
+Physical HyperOS 3 / Android 16 verification (both development APKs beside the existing Paseo, binding under HyperOS policies, pixels, egress, hang, lifecycle, dictation with the real microphone and audible speech with stop) is mandatory after the emulator Root and is not replaced by it. Detours on the phone are part of it. None is closed by emulator or desktop output, browser screenshots, module compilation or a package manifest.

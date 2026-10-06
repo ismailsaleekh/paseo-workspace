@@ -663,6 +663,13 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
+/**
+ * Provider-initiated replacement of the visible conversation, e.g. after native tree navigation.
+ * The manager rebuilds the timeline from streamHistory() after every event the provider already
+ * emitted, publishes it, and only then resolves.
+ */
+export type AgentHistoryReplacementHandler = () => Promise<void>;
+
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
@@ -701,6 +708,11 @@ export interface AgentSession {
   revertConversation?(input: { messageId: string }): Promise<void>;
   revertFiles?(input: { messageId: string }): Promise<void>;
   revertBoth?(input: { messageId: string }): Promise<void>;
+  /**
+   * Optional: providers that can change their active history on their own register here to have
+   * the manager replace the timeline. Called with null when the manager detaches.
+   */
+  setHistoryReplacementHandler?(handler: AgentHistoryReplacementHandler | null): void;
   /**
    * Out-of-band prompt handler. When non-null, the manager runs the returned
    * handler instead of allocating a turn. The handler emits stream events

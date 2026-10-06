@@ -3165,16 +3165,7 @@ export class AgentManager {
       );
       await invokeRewindCapability(agent.session, { messageId: providerMessageId, mode });
       if (mode !== "files") {
-        await this.hydrateTimelineFromProvider(agentId, {
-          force: true,
-          broadcast: true,
-          broadcastTimeline: false,
-        });
-        this.dispatch({
-          type: "timeline_replacement",
-          agentId,
-          epoch: this.timelineStore.getEpoch(agentId),
-        });
+        await this.publishProviderTimelineReplacement(agentId);
       }
       // Rewind stages provider events under the run lock; publish its final state directly.
       this.refreshSessionPersistence(agent);
@@ -3747,7 +3738,34 @@ export class AgentManager {
     const unsubscribe = agent.session.subscribe((event: AgentStreamEvent) => {
       this.enqueueSessionEvent(agentId, event);
     });
-    agent.unsubscribeSession = unsubscribe;
+    const session = agent.session;
+    session.setHistoryReplacementHandler?.(() => this.replaceTimelineFromProvider(agentId));
+    agent.unsubscribeSession = () => {
+      unsubscribe();
+      session.setHistoryReplacementHandler?.(null);
+    };
+  }
+
+  /**
+   * A provider changed its active history on its own (Pi detours). Process every event it emitted
+   * before the change, then publish the replacement exactly as a conversation rewind does.
+   */
+  private async replaceTimelineFromProvider(agentId: string): Promise<void> {
+    await this.drainSessionEvents(agentId);
+    await this.publishProviderTimelineReplacement(agentId);
+  }
+
+  private async publishProviderTimelineReplacement(agentId: string): Promise<void> {
+    await this.hydrateTimelineFromProvider(agentId, {
+      force: true,
+      broadcast: true,
+      broadcastTimeline: false,
+    });
+    this.dispatch({
+      type: "timeline_replacement",
+      agentId,
+      epoch: this.timelineStore.getEpoch(agentId),
+    });
   }
 
   private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {

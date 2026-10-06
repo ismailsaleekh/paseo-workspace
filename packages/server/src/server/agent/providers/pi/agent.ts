@@ -30,6 +30,7 @@ import {
   type AgentSlashCommand,
   type AgentSlashCommandKind,
   type AgentStreamEvent,
+  type AgentHistoryReplacementHandler,
   type FetchCatalogOptions,
   type SteerActiveTurnOptions,
   type SteerResult,
@@ -67,6 +68,12 @@ import { materializeProviderImage } from "../provider-image-output.js";
 import { PiCliRuntime } from "./cli-runtime.js";
 import { createPiExtensionHost, type PiExtensionEventOutput } from "./extensions/index.js";
 import { revertPiConversation } from "./rewind.js";
+import {
+  buildBranchCommitPrompt,
+  parseQueuedBranchOperation,
+  settleBranchOperations,
+  type QueuedBranchOperation,
+} from "./branch-transition.js";
 import { listPiImportableSessions, readPiImportSessionConfig } from "./session-descriptor.js";
 import type { PiRuntime, PiRuntimeSession, PiStartSessionInput } from "./runtime.js";
 import type {
@@ -1155,6 +1162,10 @@ export class PiRpcAgentSession implements AgentSession {
   // Pi publishes the terminal before acknowledging abort. Autonomous runs have no
   // turn ID; retain their errors too until the cancellation request settles.
   private interruptingTurn: { turnId: string | undefined; error: string | null } | null = null;
+  // Detour transitions queued by branch tools during the active run; committed after settlement.
+  private readonly queuedBranchOperations: QueuedBranchOperation[] = [];
+  private branchSettlementActive = false;
+  private historyReplacementHandler: AgentHistoryReplacementHandler | null = null;
 
   constructor(options: PiRpcAgentSessionOptions) {
     this.runtimeSession = options.runtimeSession;
@@ -1344,6 +1355,10 @@ export class PiRpcAgentSession implements AgentSession {
     return () => {
       this.subscribers.delete(callback);
     };
+  }
+
+  setHistoryReplacementHandler(handler: AgentHistoryReplacementHandler | null): void {
+    this.historyReplacementHandler = handler;
   }
 
   async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
@@ -2194,7 +2209,54 @@ export class PiRpcAgentSession implements AgentSession {
       this.pendingSettledMessages = event.messages ?? [];
       return;
     }
+    if (this.queuedBranchOperations.length > 0) {
+      void this.completeTurnAfterBranchSettlement(turnId, this.pendingSettledMessages ?? []);
+      return;
+    }
     this.completeTurn(turnId, this.pendingSettledMessages ?? []);
+  }
+
+  /**
+   * Commits queued detour returns through the extension's command (tree navigation is
+   * command-only in Pi), replaces the visible timeline with the active branch, and only then
+   * completes the turn, so input submitted after the turn is delivered on the new branch.
+   */
+  private async completeTurnAfterBranchSettlement(
+    turnId: string | undefined,
+    messages: PiAgentMessage[],
+  ): Promise<void> {
+    const operations = this.queuedBranchOperations.splice(0);
+    this.branchSettlementActive = true;
+    let failure: string | null = null;
+    try {
+      await settleBranchOperations(operations, {
+        commit: (operation) => this.runBranchCommitCommand(operation),
+        replaceHistory: this.historyReplacementHandler,
+      });
+    } catch (error) {
+      failure = `Conversation detour transition failed: ${toDiagnosticErrorMessage(error)}`;
+      this.logger.error({ err: error, operations }, "Pi detour transition failed");
+    } finally {
+      this.branchSettlementActive = false;
+    }
+    if (this.closed || (turnId !== undefined && this.activeTurnId !== turnId)) {
+      return;
+    }
+    this.completeTurn(turnId, messages, failure);
+  }
+
+  private async runBranchCommitCommand(operation: string): Promise<unknown> {
+    const requestId = randomUUID();
+    const result = this.waitForExtensionResult(requestId);
+    try {
+      await this.runtimeSession.prompt(buildBranchCommitPrompt({ requestId, operation }));
+    } catch (error) {
+      this.rejectExtensionResult(
+        requestId,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+    return await result;
   }
 
   private handleToolExecutionEnd(
@@ -2215,6 +2277,22 @@ export class PiRpcAgentSession implements AgentSession {
       result,
     });
     this.emitToolCallEvent(event.toolCallId, toolCall, status, result, error);
+    try {
+      const queued = parseQueuedBranchOperation({
+        toolName: event.toolName,
+        isError: event.isError === true,
+        result: event.result,
+      });
+      if (queued) this.queuedBranchOperations.push(queued);
+    } catch (parseError) {
+      this.logger.error({ err: parseError }, "Pi branch tool returned an invalid result");
+      this.emit({
+        type: "timeline",
+        provider: this.provider,
+        turnId: this.currentTurnIdForEvent(),
+        item: { type: "error", message: toDiagnosticErrorMessage(parseError) },
+      });
+    }
   }
 
   private emitCompactionTimeline(input: {
@@ -2298,6 +2376,10 @@ export class PiRpcAgentSession implements AgentSession {
       return;
     }
     if (event.message.role === "custom") {
+      if (this.branchSettlementActive && this.historyReplacementHandler) {
+        // The timeline is replaced from the active branch right after this transition.
+        return;
+      }
       const customMapping = this.extensionHost.mapCustomMessage(event.message);
       this.emitExtensionOutput(customMapping, turnId);
       const text = getUserMessageText(event.message.content);
@@ -2353,8 +2435,12 @@ export class PiRpcAgentSession implements AgentSession {
     return true;
   }
 
-  private completeTurn(turnId: string | undefined, messages: PiAgentMessage[]): void {
-    const errorMessage = latestPiErrorMessage(messages);
+  private completeTurn(
+    turnId: string | undefined,
+    messages: PiAgentMessage[],
+    failure: string | null = null,
+  ): void {
+    const errorMessage = failure ?? latestPiErrorMessage(messages);
     if (
       this.interruptingTurn &&
       this.interruptingTurn.turnId === turnId &&

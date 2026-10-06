@@ -10,6 +10,18 @@ import {
   listParameters,
 } from "./tools.js";
 import { createSpeakTool } from "./speak.js";
+import {
+  BRANCH_COMMIT_COMMAND,
+  ToolBatchRegistry,
+  commitReturn,
+  createBranchOpenTool,
+  createBranchReturnTool,
+  formatHostCommandFailure,
+  formatHostCommandResult,
+  parseBranchCommitPayload,
+  planOpenCommits,
+  type PendingOpen,
+} from "./branch.js";
 
 const CONTEXT_TYPE = "paseo.visual.observation";
 
@@ -70,6 +82,56 @@ export default function workspace(pi: ExtensionAPI): void {
     }),
   );
   pi.registerTool(createSpeakTool({ connection, bind }));
+  const batches = new ToolBatchRegistry();
+  const pendingOpens = new Map<string, PendingOpen>();
+  pi.registerTool(createBranchOpenTool({ host: connection, batches, bind, pending: pendingOpens }));
+  pi.registerTool(createBranchReturnTool({ host: connection, batches, bind }));
+  // Pi finalizes an assistant message before running its tool calls; branch tools need the batch.
+  pi.on("message_end", (event) => {
+    batches.record(event.message);
+  });
+  // Opens commit at the final settle boundary, after every sibling result is persisted.
+  pi.on("agent_before_settle", (event, ctx) => {
+    if (pendingOpens.size === 0) return undefined;
+    const pending = [...pendingOpens.values()];
+    pendingOpens.clear();
+    const plan = planOpenCommits({
+      pending,
+      branch: ctx.sessionManager.getBranch(),
+      entries: ctx.sessionManager.getEntries(),
+      outcome: event.outcome,
+    });
+    if (plan.entries.length === 0) return undefined;
+    return {
+      entries: [...event.entries, ...plan.entries],
+      continue: event.continue || plan.continueRun,
+    };
+  });
+  // Returns need native tree navigation, which Pi offers only to commands: the attached host runs
+  // this command once the agent has settled.
+  pi.registerCommand(BRANCH_COMMIT_COMMAND, {
+    description: "Internal Paseo bridge: commit a queued branch_return after the agent settles",
+    handler: async (args, ctx) => {
+      const payload = parseBranchCommitPayload(args);
+      try {
+        const outcome = await commitReturn(
+          {
+            branch: () => ctx.sessionManager.getBranch(),
+            entries: () => ctx.sessionManager.getEntries(),
+            navigate: (targetId) => ctx.navigateTree(targetId, { summarize: false }),
+            appendMessage: (message) => pi.sendMessage(message, { triggerTurn: false }),
+            appendEntry: (customType, data) => pi.appendEntry(customType, data),
+          },
+          payload.operation,
+        );
+        ctx.ui.notify(formatHostCommandResult(payload.requestId, outcome), "info");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(formatHostCommandFailure(payload.requestId, message), "error");
+        throw error;
+      }
+    },
+  });
   pi.on("session_start", (_event, ctx) => {
     bind(ctx.sessionManager.getSessionId());
   });

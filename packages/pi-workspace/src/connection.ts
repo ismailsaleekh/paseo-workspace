@@ -16,6 +16,7 @@ import {
   SPEECH_OPERATION_TIMEOUT_MS,
   type SpeechResult,
 } from "@getpaseo/protocol/pi-workspace/speech";
+import type { BranchHost } from "./branch.js";
 
 export interface VisualAttachmentConfig {
   socketPath: string;
@@ -50,7 +51,7 @@ interface LiveConnection {
 }
 
 /** A lazy connection: session_start never waits for the provider's startup get_state RPC. */
-export class VisualConnection implements VisualToolConnection, SpeechToolConnection {
+export class VisualConnection implements VisualToolConnection, SpeechToolConnection, BranchHost {
   private live: LiveConnection | null = null;
   private sessionId: string | null = null;
 
@@ -213,6 +214,15 @@ export class VisualConnection implements VisualToolConnection, SpeechToolConnect
       throw new VisualFailure("DISCONNECTED", "Visual host connection is closed or backpressured");
     }
     live.socket.write(line);
+  }
+
+  /** Verifies the host attachment for this session (used by tools that need no host reply). */
+  async ensureAttached(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new VisualFailure("CANCELLED", "Operation was cancelled");
+    const live = this.connect();
+    await live.ready;
+    if (live.ended || live !== this.live)
+      throw new VisualFailure("DISCONNECTED", "Visual attachment changed");
   }
 
   async request(operation: VisualOperation, signal?: AbortSignal): Promise<VisualResult> {
