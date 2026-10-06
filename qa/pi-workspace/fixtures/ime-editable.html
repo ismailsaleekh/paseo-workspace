@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Editable element witness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #00ffff;
+      }
+      #field {
+        box-sizing: border-box;
+        height: 60%;
+        padding: 8px;
+        font-size: 28px;
+        color: #000000;
+        background: #00ff00;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="field" contenteditable="true" spellcheck="false" autocapitalize="none"></div>
+    <script>
+      (() => {
+        const field = document.getElementById("field");
+        const bridge = window.paseoVisual;
+        bridge.register({
+          read() {
+            return { state: { text: field.textContent }, selection: null };
+          },
+          restore(snapshot) {
+            const value = snapshot && snapshot.state && snapshot.state.text;
+            field.textContent = typeof value === "string" ? value : "";
+          },
+          actions: {},
+        });
+        field.addEventListener("input", () => bridge.publish());
+      })();
+    </script>
+  </body>
+</html>

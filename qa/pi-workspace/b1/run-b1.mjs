@@ -17,7 +17,15 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "@playwright/test";
-import { connectClient, freePort, sleep, stopChild, waitFor } from "../android/lib.mjs";
+import {
+  connectClient,
+  freePort,
+  killTree,
+  onFlowExit,
+  sleep,
+  trackChild,
+  waitFor,
+} from "../android/lib.mjs";
 
 const repository = process.cwd();
 const prerequisiteOnly = process.argv.includes("--prerequisite");
@@ -135,6 +143,12 @@ async function startDaemon() {
       stdio: ["ignore", log, log],
     },
   );
+  // A restart replaces the registration: only the current daemon can outlive the flow.
+  const current = daemonChild;
+  onFlowExit("b1-daemon", () => {
+    if (current.exitCode === null && current.signalCode === null)
+      killTree(current.pid, "B1 daemon");
+  });
   closeSync(log);
   return waitFor(
     "isolated daemon",
@@ -344,7 +358,7 @@ try {
     },
   );
   closeSync(metroLog);
-  cleanups.push(() => stopChild(metro, "Metro"));
+  cleanups.push(trackChild(metro, "Metro"));
   await waitFor("Metro", async () => (await fetch(`http://127.0.0.1:${metroPort}/status`)).ok, {
     timeout: 120_000,
     interval: 1000,

@@ -17,7 +17,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { _electron as electron } from "@playwright/test";
-import { connectClient, freePort, sleep, stopChild, waitFor } from "../android/lib.mjs";
+import { connectClient, freePort, sleep, trackChild, waitFor } from "../android/lib.mjs";
 
 const repository = process.cwd();
 const prerequisiteOnly = process.argv.includes("--prerequisite");
@@ -258,7 +258,7 @@ try {
     },
   );
   closeSync(daemonLog);
-  cleanups.push(() => stopChild(daemon, "S1 daemon"));
+  cleanups.push(trackChild(daemon, "S1 daemon"));
   const status = await waitFor(
     "isolated speech daemon",
     async () => {
@@ -361,7 +361,7 @@ try {
     },
   );
   closeSync(metroLog);
-  cleanups.push(() => stopChild(metro, "Metro"));
+  cleanups.push(trackChild(metro, "Metro"));
   await waitFor("Metro", async () => (await fetch(`http://127.0.0.1:${metroPort}/status`)).ok, {
     timeout: 120_000,
     interval: 1000,

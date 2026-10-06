@@ -196,6 +196,85 @@ async function portInUse(port) {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Live descendants of a process (children first discovered breadth-first), from `ps`. */
+function descendants(pid) {
+  const rows = spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 10_000 });
+  const children = new Map();
+  for (const line of (rows.stdout ?? "").split("\n")) {
+    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    if (!child || !parent) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(child);
+  }
+  const found = [];
+  const queue = [pid];
+  while (queue.length > 0) {
+    for (const child of children.get(queue.shift()) ?? []) {
+      found.push(child);
+      queue.push(child);
+    }
+  }
+  return found;
+}
+
+/** SIGKILLs a process and every descendant, synchronously (usable from an exit handler). */
+export function killTree(pid, label) {
+  if (!pid) return;
+  const tree = [pid, ...descendants(pid)];
+  for (const member of tree.toReversed()) {
+    try {
+      process.kill(member, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH")
+        process.stdout.write(`${label}: could not kill ${member}: ${error.message}\n`);
+    }
+  }
+}
+
+/**
+ * Children that must not outlive the flow: if the flow ends without running its cleanups (an
+ * uncaught exception, an unhandled rejection, SIGTERM/SIGINT), they are killed with their whole
+ * process tree and their claims (such as the judge AVD lock) are released.
+ */
+const exitCleanups = new Map();
+let exitHooksInstalled = false;
+export function onFlowExit(key, cleanup) {
+  if (!exitHooksInstalled) {
+    exitHooksInstalled = true;
+    process.once("exit", () => {
+      for (const [name, run] of exitCleanups) {
+        try {
+          run();
+        } catch (error) {
+          process.stdout.write(`exit cleanup ${name} failed: ${error.message}\n`);
+        }
+      }
+    });
+    for (const [signal, code] of [
+      ["SIGTERM", 143],
+      ["SIGINT", 130],
+    ]) {
+      process.once(signal, () => {
+        process.stdout.write(`flow received ${signal}; stopping its children\n`);
+        process.exit(code);
+      });
+    }
+  }
+  exitCleanups.set(key, cleanup);
+  return () => exitCleanups.delete(key);
+}
+
+/** Registers a spawned child so it never outlives the flow; returns its bounded stop function. */
+export function trackChild(child, label) {
+  const release = onFlowExit(`${label}:${child.pid}`, () => {
+    if (child.exitCode === null && child.signalCode === null) killTree(child.pid, label);
+  });
+  return async () => {
+    await stopChild(child, label);
+    release();
+  };
+}
+
 /**
  * Stops a child process within a bound: SIGTERM, up to `graceMs` for it to exit, then SIGKILL. A
  * child that ignores both is reported and unreferenced, so a stuck bundler can never keep a judge
@@ -208,7 +287,7 @@ export async function stopChild(child, label, graceMs = 10_000) {
   await Promise.race([exited, sleep(graceMs)]);
   if (child.exitCode !== null || child.signalCode !== null) return;
   process.stdout.write(`${label} ignored SIGTERM for ${graceMs} ms; sending SIGKILL\n`);
-  child.kill("SIGKILL");
+  killTree(child.pid, label);
   await Promise.race([exited, sleep(5_000)]);
   if (child.exitCode === null && child.signalCode === null) {
     process.stdout.write(`${label} survived SIGKILL; detaching it\n`);
@@ -235,15 +314,68 @@ export async function waitFor(label, probe, { timeout = 30_000, interval = 500 }
   }
 }
 
+/** Emulator processes (qemu) running this judge AVD, with their parent pids. */
+function avdEmulators() {
+  const rows = spawnSync("ps", ["-axo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  return (rows.stdout ?? "")
+    .split("\n")
+    .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
+    .filter(
+      (match) => match && /qemu-system/.test(match[3]) && match[3].includes(`-avd ${tools.avd} `),
+    )
+    .map((match) => ({ pid: Number(match[1]), ppid: Number(match[2]) }));
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/**
+ * Claims the judge AVD. The lock holds the owning flow's pid. A lock whose owner is gone and
+ * whose emulator (if any) is orphaned is stale: the orphaned emulator tree is killed and the lock
+ * is claimed. A live owner or a non-orphaned emulator means the AVD is in use.
+ */
+function claimAvdLock(lock) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: "wx" });
+      return;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    const owner = Number.parseInt(readFileSync(lock, "utf8"), 10);
+    const ownerAlive = Number.isInteger(owner) && owner > 0 && alive(owner);
+    const emulators = avdEmulators();
+    if (ownerAlive || emulators.some((emulator) => emulator.ppid !== 1)) {
+      throw preparationFailure(
+        `judge AVD is in use (${lock}, owner ${Number.isInteger(owner) ? owner : "unknown"})`,
+      );
+    }
+    for (const emulator of emulators) {
+      process.stdout.write(`stopping orphaned judge emulator ${emulator.pid}\n`);
+      killTree(emulator.pid, "orphaned judge emulator");
+    }
+    rmSync(lock, { force: true });
+    process.stdout.write(
+      `removed a stale judge AVD lock (owner ${Number.isInteger(owner) ? owner : "unknown"} is gone)\n`,
+    );
+  }
+  throw preparationFailure(`judge AVD lock could not be claimed (${lock})`);
+}
+
 /** Boots a fresh judge emulator (wiped data, no snapshot) and returns a Device. */
 export async function startEmulator(logDir) {
   ensureJudgeAvd();
   const lock = path.join(tools.avdHome, "judge.lock");
-  try {
-    closeSync(openSync(lock, "wx"));
-  } catch {
-    throw preparationFailure(`judge AVD is in use (${lock}); remove it only if no judge runs`);
-  }
+  claimAvdLock(lock);
   let consolePort = 5600;
   while (
     consolePort < 5680 &&
@@ -277,11 +409,16 @@ export async function startEmulator(logDir) {
   );
   closeSync(log);
   const device = new Device(serial);
+  const releaseExit = onFlowExit(`emulator:${serial}`, () => {
+    if (child.exitCode === null && child.signalCode === null) killTree(child.pid, "judge emulator");
+    rmSync(lock, { force: true });
+  });
   const close = async () => {
     spawnSync(tools.adb, ["-s", serial, "emu", "kill"], { env: androidEnv(), timeout: 15_000 });
     await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(20_000)]);
-    if (child.exitCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null) killTree(child.pid, "judge emulator");
     rmSync(lock, { force: true });
+    releaseExit();
   };
   try {
     await waitFor(
@@ -592,11 +729,7 @@ export async function startIsolatedDaemon(root, options = {}) {
     serverId: status.serverId,
     piDir,
     trace,
-    close: async () => {
-      child.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(10_000)]);
-      if (child.exitCode === null) child.kill("SIGKILL");
-    },
+    close: trackChild(child, "isolated daemon"),
   };
 }
 

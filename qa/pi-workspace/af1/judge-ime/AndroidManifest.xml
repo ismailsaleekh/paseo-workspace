@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Judge-owned test keyboard for the AF1 oracle (emulator only). It drives the standard
+     InputConnection exactly like a phone keyboard and logs every EditorInfo it is bound to. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="sh.paseo.judge.ime"
+    android:versionCode="1"
+    android:versionName="1">
+  <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
+  <application android:label="Judge keyboard" android:hasCode="true" android:allowBackup="false">
+    <service
+        android:name=".JudgeIme"
+        android:label="Judge keyboard"
+        android:permission="android.permission.BIND_INPUT_METHOD"
+        android:exported="true">
+      <intent-filter>
+        <action android:name="android.view.InputMethod" />
+      </intent-filter>
+      <meta-data android:name="android.view.im" android:resource="@xml/method" />
+    </service>
+  </application>
+</manifest>

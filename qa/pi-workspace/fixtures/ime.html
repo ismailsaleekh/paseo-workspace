@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keyboard witness</title>
+    <style>
+      /* Judge-owned AF1 fixture. Each region has a distinct flat color so the oracle can find it
+         in an independent screencap: green = text input, yellow = numeric input,
+         blue = multi-line textarea, cyan = non-editable area (blur target). */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #ffffff;
+      }
+      body {
+        display: grid;
+        grid-template-rows: 1fr 1fr 1fr 1fr;
+      }
+      input,
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        border: 0;
+        padding: 8px;
+        font-size: 28px;
+        color: #000000;
+        resize: none;
+        outline: none;
+        caret-color: #000000;
+      }
+      #text {
+        background: #00ff00;
+      }
+      #number {
+        background: #ffff00;
+      }
+      #notes {
+        background: #0000ff;
+        color: #ffffff;
+        caret-color: #ffffff;
+      }
+      #blank {
+        background: #00ffff;
+      }
+    </style>
+  </head>
+  <body>
+    <input
+      id="text"
+      autocomplete="off"
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
+    />
+    <input
+      id="number"
+      inputmode="numeric"
+      autocomplete="off"
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
+    />
+    <textarea
+      id="notes"
+      autocomplete="off"
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
+    ></textarea>
+    <div id="blank"></div>
+    <script>
+      (() => {
+        const fields = {
+          text: document.getElementById("text"),
+          number: document.getElementById("number"),
+          notes: document.getElementById("notes"),
+        };
+        const bridge = window.paseoVisual;
+        bridge.register({
+          read() {
+            return {
+              state: {
+                text: fields.text.value,
+                number: fields.number.value,
+                notes: fields.notes.value,
+              },
+              selection: null,
+            };
+          },
+          restore(snapshot) {
+            const state = (snapshot && snapshot.state) || {};
+            for (const [key, field] of Object.entries(fields)) {
+              field.value = typeof state[key] === "string" ? state[key] : "";
+            }
+          },
+          actions: {},
+        });
+        for (const field of Object.values(fields)) {
+          field.addEventListener("input", () => bridge.publish());
+        }
+      })();
+    </script>
+  </body>
+</html>

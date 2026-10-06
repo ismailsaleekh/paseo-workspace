@@ -336,6 +336,10 @@ test("real Pi controls and inspects a persistent interactive explanation", async
     ]);
     await page.reload();
     await expect(page.getByTestId("message-input-root")).toBeVisible();
+    // The composer can mount before the independent visual subscription reconnects. Require the
+    // saved visual to auto-restore before testing a tool call on that newly connected display.
+    await expect(visual.locator("#result")).toHaveText("125", { timeout: 15_000 });
+    await expect(visual.locator("#selected")).toHaveText("Selected: result");
     const reopened = artifactSchema.parse(
       await call("visual_present", { mode: "open", id: shown.id }),
     );
