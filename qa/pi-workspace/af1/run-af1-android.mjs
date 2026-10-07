@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync, readFileSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
-import { completeLogLines } from "./log-lines.mjs";
+import { completeLogLines, destroyedWebViewCalls } from "./log-lines.mjs";
 import {
   COMPANION_PACKAGE,
   PASEO_PACKAGE,
@@ -873,11 +873,16 @@ try {
     );
 
     await check("no calls into destroyed WebViews and no ANR during feature checks", async () => {
-      const destroyed = companionLines().filter((line) =>
-        line.includes("attempted to call on a destroyed WebView"),
-      );
-      if (destroyed.length > 0)
-        fail(`companion called a destroyed WebView ${destroyed.length} time(s): ${destroyed[0]}`);
+      // AF1 R2 concerns companion code; WebView logs the caller's stack with each warning.
+      const destroyed = destroyedWebViewCalls(companionLines());
+      for (const line of destroyed.internal)
+        process.stdout.write(
+          `AF1 NOTE WebView-internal late callback after teardown (stack has no companion frame): ${line}\n`,
+        );
+      if (destroyed.companion.length > 0)
+        fail(
+          `companion called a destroyed WebView ${destroyed.companion.length} time(s): ${destroyed.companion[0]}`,
+        );
       if (device.anrCount > anrBaseline)
         fail(`${device.anrCount - anrBaseline} ANR dialog(s) during feature checks`);
       if (device.pid(PASEO_PACKAGE) !== paseoPid) fail("Paseo process restarted");
