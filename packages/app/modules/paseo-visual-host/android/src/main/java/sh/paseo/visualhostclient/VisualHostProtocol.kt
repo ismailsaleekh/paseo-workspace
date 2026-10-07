@@ -19,6 +19,7 @@ object VisualHostProtocol {
   const val WARM = 6
   /** A touch on the visual's area in Paseo, relayed to the embedded document. */
   const val TOUCH = 7
+  const val INPUT = 8
 
   // Visual host -> Paseo
   const val ATTACHED = 101
@@ -26,6 +27,7 @@ object VisualHostProtocol {
   const val CAPTURED = 103
   const val FAILED = 104
   const val ACTIVITY = 105
+  const val EDITOR = 106
 
   const val KEY_SESSION = "session"
   const val KEY_HOST_TOKEN = "hostToken"
@@ -44,6 +46,36 @@ object VisualHostProtocol {
   const val KEY_CODE = "code"
   const val KEY_TEXT = "text"
   const val KEY_EVENT = "event"
+  const val KEY_FOCUSED = "focused"
+  const val KEY_GENERATION = "generation"
+  const val KEY_SEQUENCE = "sequence"
+  const val KEY_INPUT_KIND = "inputKind"
+  const val KEY_SELECTION_START = "selectionStart"
+  const val KEY_SELECTION_END = "selectionEnd"
+  const val KEY_OPERATION = "operation"
+  const val KEY_FIRST = "first"
+  const val KEY_SECOND = "second"
+  const val MAX_EDITOR_BYTES = 64 * 1024
+
+  fun validEditorText(text: String): Boolean {
+    var index = 0
+    while (index < text.length) {
+      val char = text[index]
+      if (Character.isHighSurrogate(char)) {
+        if (index + 1 >= text.length || !Character.isLowSurrogate(text[index + 1])) return false
+        index += 2
+      } else {
+        if (Character.isLowSurrogate(char)) return false
+        index += 1
+      }
+    }
+    return text.toByteArray(Charsets.UTF_8).size <= MAX_EDITOR_BYTES
+  }
+
+  fun validSelection(text: String, start: Int, end: Int): Boolean =
+    start in 0..text.length && end in 0..text.length
+
+  fun validInputKind(kind: String): Boolean = kind == "text" || kind == "number" || kind == "multiline"
 
   const val MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
   const val MAX_MESSAGE_CHARS = 128 * 1024

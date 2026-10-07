@@ -3,6 +3,21 @@ package sh.paseo.visualhostclient
 import android.annotation.TargetApi
 import android.content.Context
 import android.graphics.Matrix
+import android.graphics.Rect
+import android.text.Editable
+import android.text.InputType
+import android.text.Selection
+import android.text.SpannableStringBuilder
+import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedText
+import android.view.inputmethod.ExtractedTextRequest
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
@@ -10,6 +25,7 @@ import android.os.SharedMemory
 import android.system.ErrnoException
 import android.system.OsConstants
 import android.util.Base64
+import android.util.Log
 import android.view.MotionEvent
 import android.view.SurfaceControlViewHost
 import android.view.SurfaceHolder
@@ -42,14 +58,34 @@ class PaseoVisualHostView(context: Context, appContext: AppContext) :
   private var embeddedHeight = 0
   private var emittedEvents = 0
   private var lastFailure: String? = null
+  private var imeWasShown = false
+  private var showPending = false
+  private val editor = VisualEditor(this, object : EditorTransport {
+    override fun send(data: Bundle): Boolean = connection?.send(VisualHostProtocol.INPUT, data) == true
+    override fun ended() {
+      showPending = false
+      if (isFocused) {
+        context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(windowToken, 0)
+        clearFocus()
+      }
+    }
+  })
 
   init {
-    // The surface stays behind Paseo's window, so every in-window overlay, header and composer is
-    // drawn above the visual. Input that lands on this view (nothing above it) is relayed to the
-    // embedded document; focusing the SurfaceView hands window focus to the embedded hierarchy
-    // (Android 12+), so the keyboard reaches text fields inside the visual.
-    surface.isFocusable = true
-    surface.isFocusableInTouchMode = true
+    // The surface never owns input focus: the IME must belong to Paseo's window on every OEM.
+    isFocusable = true
+    isFocusableInTouchMode = true
+    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+    surface.isFocusable = false
+    surface.isFocusableInTouchMode = false
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      setOnApplyWindowInsetsListener { _, insets ->
+        val shown = insets.isVisible(WindowInsets.Type.ime())
+        if (imeWasShown && !shown && editor.active) editor.stop(true)
+        imeWasShown = shown
+        insets
+      }
+    }
     surface.holder.addCallback(this)
     addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
   }
@@ -68,6 +104,7 @@ class PaseoVisualHostView(context: Context, appContext: AppContext) :
     require(VisualHostProtocol.isSession(session)) { "Invalid visual session" }
     if (this.session != null) closeCurrent(notifyHost = true)
     this.session = session
+    editor.bind(session)
     document = html
     opened = false
     pendingPosts.clear()
@@ -133,7 +170,7 @@ class PaseoVisualHostView(context: Context, appContext: AppContext) :
     if (current == null || host == null || !opened || attached == null) return false
     if (event.actionMasked == MotionEvent.ACTION_DOWN) {
       parent?.requestDisallowInterceptTouchEvent(true)
-      if (!surface.isFocused) surface.requestFocus()
+      // Focus is claimed only after the companion reports an editable element.
     }
     val copy = MotionEvent.obtain(event)
     try {
@@ -252,8 +289,57 @@ class PaseoVisualHostView(context: Context, appContext: AppContext) :
       VisualHostProtocol.CAPTURED -> relayCapture(current, data)
       VisualHostProtocol.FAILED -> relayFailure(current, data)
       VisualHostProtocol.ACTIVITY -> emit(mapOf("type" to "activity", "session" to current))
+      VisualHostProtocol.EDITOR -> {
+        val previousGeneration = editor.generation
+        if (editor.receive(data)) {
+          // Echoes of the same focused field keep the existing keyboard; only a new focus binds it.
+          if (!isFocused || previousGeneration != editor.generation) {
+            requestFocus()
+            val ime = context.getSystemService(InputMethodManager::class.java)
+            ime.restartInput(this)
+            // The element was focused by the user's tap: request the keyboard explicitly, as an
+            // EditText does. If the IMM has not bound this view yet, onCreateInputConnection shows it.
+            showPending = true
+            post { showKeyboardIfBound() }
+          }
+        }
+      }
       else -> fail(current, VisualHostProtocol.INVALID_REQUEST, "Visual host sent an unknown message")
     }
+  }
+
+  override fun onCheckIsTextEditor(): Boolean = editor.active
+
+  override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
+    val created = editor.connection(info)
+    if (created != null && showPending) post { showKeyboardIfBound() }
+    return created
+  }
+
+  private fun showKeyboardIfBound() {
+    if (!showPending) return
+    if (!editor.active || !isFocused) {
+      showPending = false
+      return
+    }
+    val ime = context.getSystemService(InputMethodManager::class.java)
+    // Not served yet: the IMM's next onCreateInputConnection for this view retries once bound.
+    if (!ime.isActive(this)) return
+    showPending = false
+    ime.showSoftInput(this, 0)
+  }
+
+  override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+    super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+    if (!gainFocus) editor.stop(true)
+  }
+
+  override fun onKeyPreIme(keyCode: Int, event: KeyEvent): Boolean {
+    if (keyCode == KeyEvent.KEYCODE_BACK && editor.active) {
+      if (event.action == KeyEvent.ACTION_UP) editor.stop(true)
+      return true
+    }
+    return super.onKeyPreIme(keyCode, event)
   }
 
   private fun tryOpen() {
@@ -412,6 +498,8 @@ class PaseoVisualHostView(context: Context, appContext: AppContext) :
   }
 
   private fun closeCurrent(notifyHost: Boolean) {
+    editor.stop(notifyHost)
+    editor.bind(null)
     val current = session
     if (current != null && opened && notifyHost) {
       connection?.send(
@@ -453,4 +541,221 @@ class PaseoVisualHostView(context: Context, appContext: AppContext) :
     } else {
       data.getParcelable(key)
     }
+}
+
+/** The production editor's only outbound boundary; text is never sent through React Native. */
+interface EditorTransport {
+  fun send(data: Bundle): Boolean
+  fun ended()
+}
+
+/** A transient IME mirror, bound to one mount and focus generation. */
+class VisualEditor(private val host: View, private val transport: EditorTransport) {
+  private var session: String? = null
+  private val text = SpannableStringBuilder()
+  private var sequence = 0L
+  private var epoch = 0L
+  private var connectionSerial = 0L
+  private var retiredGeneration = 0L
+  private var inputKind = "text"
+  var generation = 0L
+    private set
+  val active: Boolean get() = generation > 0L
+
+  fun bind(session: String?) {
+    stop(false)
+    this.session = session
+    retiredGeneration = 0L
+    epoch += 1
+  }
+
+  fun receive(data: Bundle): Boolean {
+    if (data.get(VisualHostProtocol.KEY_SESSION) != session || session == null) return false
+    val next = data.get(VisualHostProtocol.KEY_GENERATION) as? Long
+    val ack = data.get(VisualHostProtocol.KEY_SEQUENCE) as? Long
+    val focused = data.get(VisualHostProtocol.KEY_FOCUSED) as? Boolean
+    if (next == null || next <= 0 || ack == null || ack < 0 || focused == null) {
+      stop(true)
+      return false
+    }
+    if (next <= retiredGeneration || next < generation) return false
+    if (!focused) {
+      retiredGeneration = maxOf(retiredGeneration, next)
+      stop(false)
+      return false
+    }
+    val value = data.get(VisualHostProtocol.KEY_TEXT) as? String
+    val start = data.get(VisualHostProtocol.KEY_SELECTION_START) as? Int
+    val end = data.get(VisualHostProtocol.KEY_SELECTION_END) as? Int
+    val kind = data.get(VisualHostProtocol.KEY_INPUT_KIND) as? String
+    if (value == null || start == null || end == null || kind == null ||
+      !VisualHostProtocol.validEditorText(value) || !VisualHostProtocol.validSelection(value, start, end) ||
+      !VisualHostProtocol.validInputKind(kind)
+    ) {
+      stop(true)
+      return false
+    }
+    if (next == generation && ack < sequence) return true
+    if ((next == generation && ack > sequence) || (next != generation && ack != 0L)) {
+      stop(true)
+      return false
+    }
+    if (next != generation) {
+      epoch += 1
+      text.clear()
+      text.clearSpans()
+      generation = next
+    }
+    sequence = ack
+    inputKind = kind
+    if (text.toString() != value) text.replace(0, text.length, value)
+    Selection.setSelection(text, start, end)
+    return true
+  }
+
+  fun stop(notify: Boolean) {
+    if (!active) return
+    Log.i("PaseoVisualEditor", "editor stopped (notify=$notify)")
+    if (notify) send("blur", null, 0, 0)
+    retiredGeneration = maxOf(retiredGeneration, generation)
+    generation = 0L
+    epoch += 1
+    sequence = 0L
+    text.clear()
+    text.clearSpans()
+    transport.ended()
+  }
+
+  fun connection(info: EditorInfo): InputConnection? {
+    if (!active) return null
+    info.inputType = when (inputKind) {
+      "number" -> InputType.TYPE_CLASS_NUMBER
+      "multiline" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+      else -> InputType.TYPE_CLASS_TEXT
+    }
+    info.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+      if (inputKind == "multiline") EditorInfo.IME_FLAG_NO_ENTER_ACTION else EditorInfo.IME_ACTION_DONE
+    info.initialSelStart = Selection.getSelectionStart(text)
+    info.initialSelEnd = Selection.getSelectionEnd(text)
+    connectionSerial += 1
+    return Connection(epoch, connectionSerial)
+  }
+
+  private fun send(operation: String, value: String?, first: Int, second: Int): Boolean {
+    val mounted = session ?: return false
+    if (!active) return false
+    sequence += 1
+    val data = Bundle().apply {
+      putString(VisualHostProtocol.KEY_SESSION, mounted)
+      putLong(VisualHostProtocol.KEY_GENERATION, generation)
+      putLong(VisualHostProtocol.KEY_SEQUENCE, sequence)
+      putString(VisualHostProtocol.KEY_OPERATION, operation)
+      if (value != null) putString(VisualHostProtocol.KEY_TEXT, value)
+      putInt(VisualHostProtocol.KEY_FIRST, first)
+      putInt(VisualHostProtocol.KEY_SECOND, second)
+    }
+    return transport.send(data)
+  }
+
+  private inner class Connection(private val binding: Long, private val serial: Long) : BaseInputConnection(host, true) {
+    private var disconnected = false
+    // Validity follows the IMM's own retirement (closeConnection) and the focus epoch. The IMM may
+    // create a further connection without moving the keyboard off this one (observed on API 36),
+    // so "newest created" is not a retirement signal.
+    private fun live(): Boolean = !disconnected && active && epoch == binding
+    override fun getEditable(): Editable = text
+
+    private fun apply(operation: String, value: CharSequence?, first: Int, second: Int, edit: () -> Boolean): Boolean {
+      if (!live()) {
+        // Loud, content-free: an IME operation reached a connection that no longer serves the field.
+        Log.w(
+          "PaseoVisualEditor",
+          "dropped $operation: disconnected=$disconnected active=$active epochMatch=${epoch == binding} connection=#$serial",
+        )
+        return false
+      }
+      val string = value?.toString()
+      if (string != null && (!VisualHostProtocol.validEditorText(string) ||
+        first !in -VisualHostProtocol.MAX_EDITOR_BYTES..VisualHostProtocol.MAX_EDITOR_BYTES)
+      ) {
+        stop(true)
+        return false
+      }
+      if (!edit() || !VisualHostProtocol.validEditorText(text.toString())) {
+        stop(true)
+        return false
+      }
+      if (!send(operation, string, first, second)) {
+        Log.w("PaseoVisualEditor", "relay of $operation failed; ending the editor")
+        stop(false)
+        return false
+      }
+      return true
+    }
+
+    override fun commitText(value: CharSequence?, cursor: Int): Boolean =
+      apply("commit", value ?: "", cursor, 0) { super.commitText(value ?: "", cursor) }
+    override fun setComposingText(value: CharSequence?, cursor: Int): Boolean =
+      apply("compose", value ?: "", cursor, 0) { super.setComposingText(value ?: "", cursor) }
+    override fun finishComposingText(): Boolean = apply("finish", null, 0, 0) { super.finishComposingText() }
+    override fun deleteSurroundingText(before: Int, after: Int): Boolean {
+      if (before !in 0..VisualHostProtocol.MAX_EDITOR_BYTES || after !in 0..VisualHostProtocol.MAX_EDITOR_BYTES) {
+        if (live()) stop(true)
+        return false
+      }
+      return apply("delete", null, before, after) { super.deleteSurroundingText(before, after) }
+    }
+    override fun deleteSurroundingTextInCodePoints(before: Int, after: Int): Boolean {
+      if (before !in 0..VisualHostProtocol.MAX_EDITOR_BYTES || after !in 0..VisualHostProtocol.MAX_EDITOR_BYTES) {
+        if (live()) stop(true)
+        return false
+      }
+      return apply("deleteCodePoints", null, before, after) { super.deleteSurroundingTextInCodePoints(before, after) }
+    }
+    override fun setSelection(start: Int, end: Int): Boolean {
+      if (!VisualHostProtocol.validSelection(text.toString(), start, end)) {
+        if (live()) stop(true)
+        return false
+      }
+      return apply("selection", null, start, end) { super.setSelection(start, end) }
+    }
+    override fun setComposingRegion(start: Int, end: Int): Boolean {
+      if (!VisualHostProtocol.validSelection(text.toString(), start, end)) {
+        if (live()) stop(true)
+        return false
+      }
+      return apply("region", null, start, end) { super.setComposingRegion(start, end) }
+    }
+    override fun sendKeyEvent(event: KeyEvent): Boolean {
+      if (event.keyCode != KeyEvent.KEYCODE_ENTER && event.keyCode != KeyEvent.KEYCODE_DEL) return false
+      return apply("key", null, event.keyCode, event.action) {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+          if (event.keyCode == KeyEvent.KEYCODE_DEL) super.deleteSurroundingText(1, 0)
+          else if (inputKind == "multiline") super.commitText("\n", 1)
+          else true
+        } else event.action == KeyEvent.ACTION_UP
+      }
+    }
+    override fun performEditorAction(action: Int): Boolean = apply("action", null, action, 0) { true }
+    override fun beginBatchEdit(): Boolean = live()
+    override fun endBatchEdit(): Boolean = live()
+    override fun getTextBeforeCursor(length: Int, flags: Int): CharSequence? =
+      if (live() && length >= 0) super.getTextBeforeCursor(length.coerceAtMost(VisualHostProtocol.MAX_EDITOR_BYTES), flags) else null
+    override fun getTextAfterCursor(length: Int, flags: Int): CharSequence? =
+      if (live() && length >= 0) super.getTextAfterCursor(length.coerceAtMost(VisualHostProtocol.MAX_EDITOR_BYTES), flags) else null
+    override fun getSelectedText(flags: Int): CharSequence? = if (live()) super.getSelectedText(flags) else null
+    override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
+      if (!live()) return null
+      return ExtractedText().apply {
+        text = this@VisualEditor.text.toString()
+        selectionStart = Selection.getSelectionStart(this@VisualEditor.text)
+        selectionEnd = Selection.getSelectionEnd(this@VisualEditor.text)
+      }
+    }
+    override fun closeConnection() {
+      // IMM closes the previous connection during restartInput, without ending DOM focus.
+      // Blur, window insets, composer handoff and mount lifetime retire the editor instead.
+      disconnected = true
+    }
+  }
 }

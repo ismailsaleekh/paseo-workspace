@@ -10,7 +10,6 @@ import android.os.Message
 import android.os.Messenger
 import android.os.RemoteException
 import android.os.SharedMemory
-import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.OsConstants
 import android.view.MotionEvent
@@ -40,9 +39,15 @@ class VisualDocumentSession(
   val id: String,
   private val client: Messenger,
   private val onClosed: (VisualDocumentSession) -> Unit,
+  private val onRecoveryStarted: (VisualDocumentSession) -> Unit,
+  private val onRecoveryFinished: (VisualDocumentSession) -> Unit,
+  private val watchdog: MainThreadWatchdog,
 ) : DocumentEvents {
   private val handler = Handler(Looper.getMainLooper())
-  private var web: WebView? = null
+  private var web: VisualKeyboardWebView? = null
+  private var keyboard: VisualKeyboardBridge? = null
+  private var recovering = false
+  private var destroyed = false
   private var viewHost: SurfaceControlViewHost? = null
   private var pageReady = false
   private var closed = false
@@ -50,13 +55,12 @@ class VisualDocumentSession(
   private val deadlines = HashMap<Int, Runnable>()
   private var nextToken = 0
   private var loadToken = 0
-  private var windowStart = 0L
-  private var windowCount = 0
+  private val messageBudget = VisualMessageBudget()
   private var reported = false
   private val bridgeSilent = Runnable {
     fail(
-      VisualHostProtocol.DOCUMENT_REJECTED,
-      "The document loaded but its bridge never reported; the host transport is unavailable",
+      VisualHostProtocol.DOCUMENT_UNRESPONSIVE,
+      "The document loaded but its bridge never reported; reopen the visual",
     )
   }
 
@@ -69,6 +73,7 @@ class VisualDocumentSession(
       WebViewFeature.WEB_MESSAGE_LISTENER,
       WebViewFeature.GET_WEB_VIEW_RENDERER,
       WebViewFeature.WEB_VIEW_RENDERER_TERMINATE,
+      WebViewFeature.DOCUMENT_START_SCRIPT,
     )
     val missing = required.filterNot { WebViewFeature.isFeatureSupported(it) }
     if (missing.isNotEmpty()) {
@@ -79,11 +84,19 @@ class VisualDocumentSession(
     }
     val display = service.getSystemService(DisplayManager::class.java).getDisplay(request.displayId)
       ?: throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Display ${request.displayId} is unavailable")
-    val view = WebView(service)
+    val view = VisualKeyboardWebView(service)
     web = view
     ProfileStore.getInstance().getOrCreateProfile(VisualHostProtocol.PROFILE)
     WebViewCompat.setProfile(view, VisualHostProtocol.PROFILE)
     VisualDocumentPolicy.install(view, request.document, this)
+    keyboard = VisualKeyboardBridge(view, id, object : KeyboardTransport {
+      override fun send(data: Bundle) {
+        send(VisualHostProtocol.EDITOR) { putAll(data) }
+      }
+      override fun rejected() {
+        fail(VisualHostProtocol.DOCUMENT_REJECTED, "The visual document exceeded its message bounds and was closed")
+      }
+    }, messageBudget, watchdog).also { it.install() }
     val host = SurfaceControlViewHost(service, display, request.hostToken)
     viewHost = host
     host.setView(view, request.width, request.height)
@@ -105,7 +118,15 @@ class VisualDocumentSession(
     if (closed || view == null) {
       throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Visual session is closed")
     }
+    if (event.actionMasked == MotionEvent.ACTION_DOWN && !view.hasFocus() && !view.requestFocus()) {
+      throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "The visual view could not receive touch focus")
+    }
     view.dispatchTouchEvent(event)
+  }
+
+  fun input(data: Bundle) {
+    if (closed) return
+    keyboard?.input(data)
   }
 
   fun post(message: String) {
@@ -168,21 +189,72 @@ class VisualDocumentSession(
       putString(VisualHostProtocol.KEY_CODE, code)
       putString(VisualHostProtocol.KEY_TEXT, message)
     }
-    close()
+    if (code == VisualHostProtocol.DOCUMENT_UNRESPONSIVE) beginRecovery()
+    else close()
   }
 
   fun close() {
     if (closed) return
+    invalidate()
+    // Do not destroy a WebView from inside one of its provider callbacks.
+    handler.post { watchdog.during("close") { destroy() } }
+  }
+
+  private fun invalidate() {
     closed = true
     handler.removeCallbacks(bridgeSilent)
     for (runnable in deadlines.values) handler.removeCallbacks(runnable)
     deadlines.clear()
     queued.clear()
+    onClosed(this)
+  }
+
+  private fun destroy() {
+    if (destroyed) return
+    destroyed = true
+    val view = web
+    web = null
+    keyboard?.close()
+    keyboard = null
     viewHost?.release()
     viewHost = null
-    web?.destroy()
-    web = null
-    onClosed(this)
+    view?.destroy()
+    if (recovering) {
+      recovering = false
+      onRecoveryFinished(this)
+    }
+  }
+
+  private fun beginRecovery() {
+    if (closed) return
+    invalidate()
+    recovering = true
+    onRecoveryStarted(this)
+    val view = web
+    val renderer = view?.let { WebViewCompat.getWebViewRenderProcess(it) }
+    keyboard?.close()
+    keyboard = null
+    // terminate() is a renderer-process operation, not a View operation. Retain the WebView
+    // until the renderer-gone callback (or a bounded completion grace) and destroy on its UI thread.
+    Thread({
+      var terminated = false
+      try {
+        if (renderer != null) {
+          VisualHostDebugFaults.beforeTerminate()
+          terminated = renderer.terminate()
+        } else {
+          android.util.Log.w("PaseoVisualHost", "Unresponsive document has no renderer handle; tearing down")
+        }
+      } catch (error: RuntimeException) {
+        android.util.Log.e("PaseoVisualHost", "Renderer termination failed: ${error.javaClass.simpleName}")
+      } catch (error: InterruptedException) {
+        android.util.Log.e("PaseoVisualHost", "Renderer termination was interrupted")
+        Thread.currentThread().interrupt()
+      } finally {
+        val grace = if (terminated) 2_000L else 0L
+        handler.postDelayed({ watchdog.during("close") { destroy() } }, grace)
+      }
+    }, "visual-terminate").start()
   }
 
   override fun onPageReady() {
@@ -199,13 +271,7 @@ class VisualDocumentSession(
 
   override fun onDocumentMessage(text: String) {
     if (closed) return
-    val now = SystemClock.uptimeMillis()
-    if (now - windowStart >= 1_000L) {
-      windowStart = now
-      windowCount = 0
-    }
-    windowCount += 1
-    if (windowCount > VisualHostProtocol.MESSAGES_PER_SECOND || text.length > VisualHostProtocol.MAX_MESSAGE_CHARS) {
+    if (!messageBudget.accept() || text.length > VisualHostProtocol.MAX_MESSAGE_CHARS) {
       fail(VisualHostProtocol.DOCUMENT_REJECTED, "The visual document exceeded its message bounds and was closed")
       return
     }
@@ -221,7 +287,10 @@ class VisualDocumentSession(
   }
 
   override fun onRendererGone(crashed: Boolean) {
-    if (closed) return
+    if (closed) {
+      if (recovering) handler.post { watchdog.during("close") { destroy() } }
+      return
+    }
     fail(
       VisualHostProtocol.RENDERER_EXITED,
       if (crashed) "The visual renderer crashed; reopen the visual" else "The visual renderer was stopped; reopen the visual",
@@ -229,6 +298,7 @@ class VisualDocumentSession(
   }
 
   private fun evaluate(message: String, token: Int) {
+    if (closed || destroyed) return
     val view = web ?: return
     // Valid JSON is a JavaScript expression; escaping '<' and line separators keeps it inert text.
     val literal = message.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
@@ -239,7 +309,7 @@ class VisualDocumentSession(
 
   private fun arm(milliseconds: Long): Int {
     val token = ++nextToken
-    val expire = Runnable { expire(token) }
+    val expire = Runnable { watchdog.during("terminate") { expire(token) } }
     deadlines[token] = expire
     handler.postDelayed(expire, milliseconds)
     return token
@@ -252,17 +322,7 @@ class VisualDocumentSession(
 
   private fun expire(token: Int) {
     if (closed || deadlines.remove(token) == null) return
-    val view = web
-    val renderer = view?.let { WebViewCompat.getWebViewRenderProcess(it) }
-    val terminated = renderer?.terminate() == true
-    fail(
-      VisualHostProtocol.DOCUMENT_UNRESPONSIVE,
-      if (terminated) {
-        "The visual stopped responding; its renderer was terminated"
-      } else {
-        "The visual stopped responding; it was closed (renderer termination was refused)"
-      },
-    )
+    fail(VisualHostProtocol.DOCUMENT_UNRESPONSIVE, "The visual stopped responding; reopen the visual")
   }
 
   private fun send(what: Int, fill: Bundle.() -> Unit) {

@@ -36,6 +36,11 @@ android {
     versionCode 1
     versionName "0.1.0"
     manifestPlaceholders = [hostPackage: hostPackage]
+    buildConfigField "boolean", "DEVELOPMENT_FAULTS", (paseoVariant == "development").toString()
+  }
+
+  buildFeatures {
+    buildConfig true
   }
 
   signingConfigs {

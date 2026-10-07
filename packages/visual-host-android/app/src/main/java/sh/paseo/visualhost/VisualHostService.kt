@@ -11,6 +11,7 @@ import android.os.Message
 import android.os.Messenger
 import android.os.RemoteException
 import android.os.SharedMemory
+import android.os.SystemClock
 import android.system.ErrnoException
 import android.util.Log
 import android.view.MotionEvent
@@ -30,16 +31,50 @@ import java.io.ByteArrayInputStream
  */
 class VisualHostService : Service() {
   private val sessions = HashMap<String, VisualDocumentSession>()
+  private val recovering = HashSet<VisualDocumentSession>()
+  private val pendingOpens = LinkedHashMap<String, PendingOpen>()
+  private val watchdog = MainThreadWatchdog()
+  private class PendingOpen(val reply: Messenger, val request: OpenRequest, val timeout: Runnable) {
+    val posts = ArrayList<String>()
+    var width = request.width
+    var height = request.height
+  }
   private val watchedClients = HashSet<IBinder>()
   private val handler = object : Handler(Looper.getMainLooper()) {
     override fun handleMessage(msg: Message) {
-      dispatch(msg)
+      val operation = when (msg.what) {
+        VisualHostProtocol.OPEN -> "open"
+        VisualHostProtocol.CLOSE -> "close"
+        VisualHostProtocol.POST -> "message"
+        VisualHostProtocol.CAPTURE -> "capture"
+        VisualHostProtocol.WARM -> "warm"
+        VisualHostProtocol.TOUCH -> "touch"
+        VisualHostProtocol.INPUT -> "input"
+        else -> "idle"
+      }
+      watchdog.during(operation) { dispatch(msg) }
     }
   }
   private val messenger = Messenger(handler)
   private var warmView: WebView? = null
   private var bound = false
-  private val rewarm = Runnable { warm() }
+  private var lastOpenAt = Long.MIN_VALUE / 2
+  private val rewarm: Runnable = Runnable {
+    watchdog.during("warm") {
+      // A renderer death while documents are being opened means a recovery open is imminent or
+      // running. Re-warming creates a WebView on this main thread (observed 3.2 s under load) and
+      // would delay that open past its display deadline. Warm once opening has been quiet.
+      val sinceOpen = SystemClock.uptimeMillis() - lastOpenAt
+      if (pendingOpens.isNotEmpty() || sinceOpen < REWARM_QUIET_MS) {
+        handler.postDelayed(rewarm, maxOf(REWARM_DELAY_MS, REWARM_QUIET_MS - sinceOpen))
+      } else warm()
+    }
+  }
+
+  override fun onCreate() {
+    super.onCreate()
+    watchdog.start()
+  }
 
   override fun onBind(intent: Intent): IBinder {
     bound = true
@@ -48,13 +83,14 @@ class VisualHostService : Service() {
 
   override fun onUnbind(intent: Intent): Boolean {
     bound = false
-    closeAll()
+    watchdog.during("close") { closeAll() }
     return false
   }
 
   override fun onDestroy() {
     bound = false
-    closeAll()
+    watchdog.during("close") { closeAll() }
+    watchdog.stop()
     super.onDestroy()
   }
 
@@ -63,7 +99,7 @@ class VisualHostService : Service() {
    * displayed page that loads nothing, so a document's display deadline excludes cold start.
    */
   private fun warm() {
-    if (!bound || warmView != null || !WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
+    if (!bound || recovering.isNotEmpty() || warmView != null || !WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
     val view = try {
       WebView(this)
     } catch (error: RuntimeException) {
@@ -89,8 +125,10 @@ class VisualHostService : Service() {
         // The shared profile renderer was terminated (for example a hung document): start a new one.
         if (warmView === view) {
           warmView = null
-          view.destroy()
-          handler.postDelayed(rewarm, REWARM_DELAY_MS)
+          handler.post {
+            watchdog.during("close") { view.destroy() }
+            handler.postDelayed(rewarm, REWARM_DELAY_MS)
+          }
         }
         return true
       }
@@ -101,8 +139,9 @@ class VisualHostService : Service() {
 
   private fun dropWarmView() {
     handler.removeCallbacks(rewarm)
-    warmView?.destroy()
+    val old = warmView
     warmView = null
+    old?.destroy()
   }
 
   private fun dispatch(msg: Message) {
@@ -120,28 +159,60 @@ class VisualHostService : Service() {
     try {
       when (msg.what) {
         VisualHostProtocol.OPEN -> open(sessionId, reply, data)
-        VisualHostProtocol.RESIZE ->
-          session(sessionId).resize(dimension(data, VisualHostProtocol.KEY_WIDTH), dimension(data, VisualHostProtocol.KEY_HEIGHT))
-        VisualHostProtocol.POST ->
-          session(sessionId).post(
-            data.getString(VisualHostProtocol.KEY_MESSAGE)
-              ?: throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Visual message is missing"),
-          )
+        VisualHostProtocol.RESIZE -> resize(sessionId, data)
+        VisualHostProtocol.POST -> post(sessionId, data)
         VisualHostProtocol.CAPTURE -> capture(sessionId, reply, data)
         VisualHostProtocol.TOUCH -> touch(sessionId, data)
+        VisualHostProtocol.INPUT -> sessions[sessionId]?.input(data)
         // Closing an already closed session is complete by definition.
-        VisualHostProtocol.CLOSE -> sessions[sessionId]?.close()
+        VisualHostProtocol.CLOSE -> {
+          pendingOpens.remove(sessionId)?.let { handler.removeCallbacks(it.timeout) }
+          sessions[sessionId]?.close()
+        }
         else -> throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Unknown visual host request ${msg.what}")
       }
     } catch (error: VisualHostException) {
+      pendingOpens.remove(sessionId)?.let { handler.removeCallbacks(it.timeout) }
       val existing = sessions[sessionId]
       if (existing != null) existing.fail(error.code, error.message ?: "Visual host request failed")
       else report(reply, sessionId, error.code, error.message ?: "Visual host request failed")
     }
   }
 
+  private fun resize(sessionId: String, data: Bundle) {
+    val width = dimension(data, VisualHostProtocol.KEY_WIDTH)
+    val height = dimension(data, VisualHostProtocol.KEY_HEIGHT)
+    val pending = pendingOpens[sessionId]
+    if (pending != null) {
+      pending.width = width
+      pending.height = height
+    } else session(sessionId).resize(width, height)
+  }
+
+  private fun post(sessionId: String, data: Bundle) {
+    val message = data.getString(VisualHostProtocol.KEY_MESSAGE)
+      ?: throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Visual message is missing")
+    val pending = pendingOpens[sessionId]
+    if (pending == null) {
+      session(sessionId).post(message)
+      return
+    }
+    if (message.length > VisualHostProtocol.MAX_MESSAGE_CHARS || pending.posts.size >= VisualHostProtocol.MAX_PENDING_POSTS) {
+      throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Visual recovery message queue exceeded its bounds")
+    }
+    try {
+      org.json.JSONObject(message)
+    } catch (error: org.json.JSONException) {
+      throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Visual message is not a JSON object")
+    }
+    // Paseo posts its initialization immediately after OPEN, even while the old renderer dies.
+    // Retain the bounded messages with this mount, not with the terminated document.
+    pending.posts.add(message)
+  }
+
   private fun open(sessionId: String, reply: Messenger, data: Bundle) {
-    if (sessions.containsKey(sessionId)) {
+    lastOpenAt = SystemClock.uptimeMillis()
+    if (sessions.containsKey(sessionId) || pendingOpens.containsKey(sessionId)) {
       throw VisualHostException(VisualHostProtocol.INVALID_REQUEST, "Visual session is already open")
     }
     val hostToken = data.getBinder(VisualHostProtocol.KEY_HOST_TOKEN)
@@ -153,9 +224,34 @@ class VisualHostService : Service() {
       height = dimension(data, VisualHostProtocol.KEY_HEIGHT),
       document = readDocument(data),
     )
-    val session = VisualDocumentSession(this, sessionId, reply) { closed -> sessions.remove(closed.id) }
-    sessions[sessionId] = session
     watch(reply)
+    if (recovering.isNotEmpty()) {
+      val timeout = Runnable {
+        pendingOpens.remove(sessionId)
+        report(reply, sessionId, VisualHostProtocol.RENDERER_UNAVAILABLE, "The visual renderer is still recovering; present again")
+      }
+      if (pendingOpens.size >= VisualHostProtocol.MAX_PENDING_POSTS) {
+        throw VisualHostException(VisualHostProtocol.RENDERER_UNAVAILABLE, "Too many visuals waiting for renderer recovery")
+      }
+      pendingOpens[sessionId] = PendingOpen(reply, request, timeout)
+      handler.postDelayed(timeout, VisualHostProtocol.LOAD_DEADLINE_MS)
+      return
+    }
+    openReady(sessionId, reply, request)
+  }
+
+  private fun openReady(sessionId: String, reply: Messenger, request: OpenRequest) {
+    val session = VisualDocumentSession(
+      this, sessionId, reply,
+      { closed -> sessions.remove(closed.id) },
+      { dying -> recovering.add(dying); Unit },
+      { recovered ->
+        recovering.remove(recovered)
+        if (recovering.isEmpty()) handler.post { watchdog.during("open") { drainRecovery() } }
+      },
+      watchdog,
+    )
+    sessions[sessionId] = session
     try {
       session.open(request)
     } catch (error: VisualHostException) {
@@ -167,6 +263,29 @@ class VisualHostService : Service() {
         "The visual renderer could not start: ${error.javaClass.simpleName}: ${error.message}",
       )
     }
+  }
+
+  private fun drainRecovery() {
+    if (!bound || recovering.isNotEmpty()) return
+    val waiting = pendingOpens.toMap()
+    pendingOpens.clear()
+    for ((id, pending) in waiting) {
+      handler.removeCallbacks(pending.timeout)
+      val request = OpenRequest(
+        pending.request.hostToken, pending.request.displayId,
+        pending.width, pending.height, pending.request.document,
+      )
+      openReady(id, pending.reply, request)
+      val opened = sessions[id]
+      if (opened != null) {
+        try {
+          for (message in pending.posts) opened.post(message)
+        } catch (error: VisualHostException) {
+          opened.fail(error.code, error.message ?: "Visual recovery initialization failed")
+        }
+      }
+    }
+    handler.postDelayed(rewarm, REWARM_DELAY_MS)
   }
 
   private fun capture(sessionId: String, reply: Messenger, data: Bundle) {
@@ -253,13 +372,19 @@ class VisualHostService : Service() {
       binder.linkToDeath({
         handler.post {
           watchedClients.remove(binder)
-          for (session in sessions.values.filter { it.clientBinder == binder }) session.close()
+          closeClient(binder)
         }
       }, 0)
     } catch (error: RemoteException) {
       watchedClients.remove(binder)
-      for (session in sessions.values.filter { it.clientBinder == binder }) session.close()
+      closeClient(binder)
     }
+  }
+
+  private fun closeClient(binder: IBinder) {
+    for (session in sessions.values.filter { it.clientBinder == binder }) session.close()
+    val abandoned = pendingOpens.filterValues { it.reply.binder == binder }.keys.toList()
+    for (id in abandoned) pendingOpens.remove(id)?.let { handler.removeCallbacks(it.timeout) }
   }
 
   private fun report(reply: Messenger, sessionId: String, code: String, text: String) {
@@ -281,6 +406,11 @@ class VisualHostService : Service() {
   }
 
   private fun closeAll() {
+    for ((id, pending) in pendingOpens.toMap()) {
+      handler.removeCallbacks(pending.timeout)
+      report(pending.reply, id, VisualHostProtocol.RENDERER_UNAVAILABLE, "The visual host was released")
+    }
+    pendingOpens.clear()
     for (session in sessions.values.toList()) session.close()
     sessions.clear()
     if (!bound) dropWarmView()
@@ -288,6 +418,8 @@ class VisualHostService : Service() {
 
   companion object {
     private const val REWARM_DELAY_MS = 500L
+    // Two load deadlines: covers a recovery open that timed out and its immediate retry.
+    private val REWARM_QUIET_MS = 2L * VisualHostProtocol.LOAD_DEADLINE_MS
     private const val TAG = "PaseoVisualHost"
   }
 }

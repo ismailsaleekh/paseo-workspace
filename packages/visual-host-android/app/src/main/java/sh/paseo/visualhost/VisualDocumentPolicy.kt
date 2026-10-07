@@ -60,6 +60,9 @@ object VisualDocumentPolicy {
     settings.cacheMode = WebSettings.LOAD_NO_CACHE
     settings.safeBrowsingEnabled = false
     settings.builtInZoomControls = false
+    // Focused DOM editing stays local; only VisualKeyboardBridge lends the internal connection
+    // to Paseo. The WebView subclass refuses a system IME connection for the embedded window.
+    web.isFocusableInTouchMode = true
     web.webViewClient = DocumentClient(document, events)
     web.webChromeClient = DeniedChrome()
     // Downloads are refused: the listener never starts one.
