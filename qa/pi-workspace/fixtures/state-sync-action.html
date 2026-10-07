@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>State and action witness</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        font: 18px system-ui;
+        color: #12243a;
+        background: #fff;
+      }
+      label,
+      output {
+        display: block;
+        margin: 16px 0;
+      }
+      input {
+        width: 90%;
+        min-height: 44px;
+        font: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Type while the agent acts</h1>
+    <label for="text">Text</label>
+    <input id="text" type="text" autocomplete="off" spellcheck="false" />
+    <output id="count" aria-label="Agent action count">0</output>
+    <script>
+      (() => {
+        const bridge = window.paseoVisual;
+        if (!bridge) throw new Error("Paseo visual bridge is missing");
+        const text = document.getElementById("text");
+        const output = document.getElementById("count");
+        let count = 0;
+        function render() {
+          output.textContent = String(count);
+        }
+        bridge.register({
+          read: () => ({ state: { text: text.value, count }, selection: null }),
+          restore: (snapshot) => {
+            const state = (snapshot && snapshot.state) || {};
+            text.value = typeof state.text === "string" ? state.text : "";
+            count = Number.isInteger(state.count) ? state.count : 0;
+            render();
+          },
+          actions: {
+            increment: {
+              description: "Add one to the agent action count",
+              parameters: { type: "object", properties: {}, additionalProperties: false },
+              run: () => {
+                count += 1;
+                render();
+              },
+            },
+          },
+        });
+        text.addEventListener("input", () => bridge.publish());
+        render();
+      })();
+    </script>
+  </body>
+</html>
