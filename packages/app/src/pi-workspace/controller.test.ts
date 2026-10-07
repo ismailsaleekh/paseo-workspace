@@ -397,3 +397,48 @@ test("each document publication is acknowledged with the daemon's stored revisio
   await controller.stop();
   assert.equal(controller.getSnapshot().acknowledgement, null);
 });
+
+test("each command result is acknowledged like a publication; the render result and error receipts are not", async () => {
+  const transport = new Transport();
+  const controller = new VisualController(transport, agentId);
+  controller.start();
+  render(transport);
+  controller.receive({ type: "paseo-visual", receipt: receipt() });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.getSnapshot().acknowledgement, null);
+  const actId = "d3f9f1d6-55a4-4c55-9f0b-0f4f8e2b6a01";
+  controller.receive({
+    type: "paseo-visual",
+    receipt: { ...receipt(2), commandId: actId, stateRevision: 1 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(controller.getSnapshot().acknowledgement, {
+    binding: current.binding,
+    sequence: 2,
+    stateRevision: 2,
+  });
+  transport.failure = new Error("Stored state changed");
+  controller.receive({
+    type: "paseo-visual",
+    receipt: { ...receipt(3), commandId: actId, stateRevision: 1 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(controller.getSnapshot().acknowledgement, {
+    binding: current.binding,
+    sequence: 3,
+    stateRevision: null,
+  });
+  transport.failure = null;
+  controller.receive({
+    type: "paseo-visual",
+    receipt: {
+      ...receipt(4),
+      commandId: null,
+      stateRevision: 2,
+      error: { code: "DOCUMENT_ERROR", message: "Visual document failed" },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.getSnapshot().acknowledgement?.sequence, 3);
+  await controller.stop();
+});

@@ -25,6 +25,7 @@ function bounds(element: HTMLDivElement): DesktopVisualBoundsUpdate["bounds"] {
 export function VisualDocument({
   current,
   restoration,
+  acknowledgement,
   renderCommandId,
   command,
   receive,
@@ -108,6 +109,17 @@ export function VisualDocument({
       })
       .catch(reportError);
   }, [bridge, restoration, reportError]);
+  useEffect(() => {
+    // The guest waits for this answer before it publishes its next change or runs a command.
+    if (!bridge || !acknowledgement || acknowledgement.binding.nonce !== nonce) return;
+    void bridge
+      .acknowledge({
+        binding: acknowledgement.binding,
+        sequence: acknowledgement.sequence,
+        stateRevision: acknowledgement.stateRevision,
+      })
+      .catch(reportError);
+  }, [bridge, nonce, acknowledgement, reportError]);
   useEffect(() => {
     if (!bridge || !command) return;
     void bridge.command({ nonce, command }).catch(reportError);

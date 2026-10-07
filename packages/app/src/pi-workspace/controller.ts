@@ -47,7 +47,7 @@ export interface VisualSurfaceState {
   status: "loading" | "ready" | "error" | "disconnected";
   current: VisualRenderDocument | null;
   restoration: VisualRenderDocument | null;
-  /** The latest answer to the current document's publication (see `visualDocumentHtml`). */
+  /** The latest answer to the current document's awaited receipt (see `visualDocumentHtml`). */
   acknowledgement: VisualAcknowledgement | null;
   renderCommandId: string | null;
   command: Exclude<VisualCommand, { kind: "render" }> | null;
@@ -336,13 +336,14 @@ export class VisualController {
       const lifetime = this.lifetime;
       const nonce = current.binding.nonce;
       if (receipt.error) this.reportError(new Error(receipt.error.message));
-      // A document publication (a state receipt without a command) waits for this answer before
-      // it publishes again, so every outcome is acknowledged to the document.
-      const publication = receipt.commandId === null && receipt.error === null;
+      // A document waits for the answer to each publication (a state receipt without a command)
+      // and each command result before it publishes again, so every outcome of those receipts is
+      // acknowledged to the document. The render receipt is not awaited.
+      const awaited =
+        receipt.error === null &&
+        (receipt.commandId === null || receipt.commandId !== this.state.renderCommandId);
       const acknowledge = (stateRevision: number | null): VisualAcknowledgement | null =>
-        publication
-          ? { binding: receipt.binding, sequence: receipt.sequence, stateRevision }
-          : null;
+        awaited ? { binding: receipt.binding, sequence: receipt.sequence, stateRevision } : null;
       void this.client.sendPiWorkspaceReceipt(this.agentId, receipt).then(
         (result) => {
           if (lifetime !== this.lifetime || this.state.current?.binding.nonce !== nonce)

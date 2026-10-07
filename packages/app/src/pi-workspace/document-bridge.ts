@@ -12,8 +12,9 @@ export const DocumentMessageSchema = z
   .object({ type: z.literal("paseo-visual"), receipt: VisualReceiptSchema })
   .strict();
 /**
- * The daemon's answer to one document publication (a state receipt without a command): the
- * stored state revision that now holds the published state, or `null` when it was rejected.
+ * The daemon's answer to one receipt the document waits for (a publication, that is a state
+ * receipt without a command, or a command result): the stored state revision that now holds it,
+ * or `null` when it was rejected.
  */
 export interface VisualAcknowledgement {
   binding: VisualBinding;
@@ -82,6 +83,11 @@ interface BridgeDocumentInput {
  * from another writer is adopted (unpublished local changes lose that conflict). Known limitation:
  * a different writer storing exactly the content of one of the unanswered receipts is taken as an
  * own returned state (its content already equals a state this document published).
+ *
+ * Agent commands are ordered with publications: a command that arrives while a receipt awaits its
+ * answer runs once that answer arrives, so its result is sent on the acknowledged base and is
+ * never rejected only because this document's own publication was in flight; changes made
+ * meanwhile wait for the command result's answer. The result carries those changes too.
  */
 export function visualDocumentHtml(input: BridgeDocumentInput): string {
   const configuration = JSON.stringify({
@@ -105,6 +111,8 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
     const sent = [];
     let publication = null;
     let wanted = false;
+    let executing = false;
+    const commands = [];
     let restoring = false;
     let resolveReady;
     const readiness = new Promise(resolve => { resolveReady = resolve; });
@@ -139,7 +147,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       if (error) return null;
       // Receipts whose returned state has not been seen yet; the oldest are never answered when
       // nothing changed, so the list is bounded rather than drained by acknowledgements.
-      const entry = {sequence:receipt.sequence, base:receipt.stateRevision, key:canonical(snapshot)};
+      const entry = {sequence:receipt.sequence, base:receipt.stateRevision, key:canonical(snapshot), command:commandId !== null, advances:true};
       sent.push(entry);
       if (sent.length > 64) sent.shift();
       return entry;
@@ -171,16 +179,41 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       sent.length = 0;
       publication = null;
       wanted = false;
+      restoring = false;
+      await proceed(false);
     }
-    function acknowledge(acknowledged, stored) {
+    async function execute(command) {
+      executing = true;
+      try {
+        if (command.kind === 'act') {
+          if (!registration || !Object.hasOwn(registration.actions,command.action)) throw new Error('Unknown visual action');
+          await registration.actions[command.action].run(command.value);
+        } else if (command.kind !== 'inspect') throw new Error('Unknown visual command');
+        const entry = send(command.commandId,null);
+        // The result carries every local change, so it is this document's next publication and
+        // later changes wait for its answer. An action's answer always names its own stored
+        // result; an agent read may be answered with another writer's newer state, which then
+        // arrives as a returned state.
+        entry.advances = command.kind === 'act';
+        wanted = false;
+        publication = entry;
+      } catch(error) { fail(command.commandId,error); }
+      finally { executing = false; }
+    }
+    async function proceed(retry) {
+      while (!publication && commands.length > 0) await execute(commands.shift());
+      if (!publication && (wanted || retry)) publishLatest();
+    }
+    async function acknowledge(acknowledged, stored) {
       const answered = publication;
       if (!answered || answered.sequence !== acknowledged) return;
       publication = null;
-      if (stored !== null && stored > stateRevision) stateRevision = stored;
+      if (stored !== null && answered.advances && stored > stateRevision) stateRevision = stored;
       // A publication rejected only because the stored state advanced with this document's own
       // receipts is published again on that base; any other rejection waits for the next change.
-      const retry = stored === null && answered.base < stateRevision;
-      if (wanted || retry) publishLatest();
+      // A rejected command result is never repeated: the agent was told that it failed.
+      const retry = stored === null && !answered.command && answered.base < stateRevision;
+      await proceed(retry);
     }
     Object.defineProperty(window,'paseoVisual',{value:Object.freeze({
       register(value) {
@@ -194,7 +227,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       },
       publish() {
         if (!ready || restoring) throw new Error('Visual cannot publish before readiness or during restoration');
-        if (publication) { wanted = true; return; }
+        if (publication || executing) { wanted = true; return; }
         try { publishLatest(); } catch(error) { fail(null,error); }
       }
     }),writable:false,configurable:false});
@@ -239,7 +272,7 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
             if (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 1) throw new Error('Invalid publication acknowledgement');
             const stored = envelope.stateRevision;
             if (stored !== null && (!Number.isSafeInteger(stored) || stored < 1)) throw new Error('Invalid acknowledged state revision');
-            acknowledge(envelope.sequence, stored);
+            await acknowledge(envelope.sequence, stored);
           } catch(error) { fail(null,error); }
         });
         return;
@@ -254,11 +287,13 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
         await readiness;
         try {
           if (!ready) throw new Error('Visual is not ready');
-          if (command.kind === 'act') {
-            if (!registration || !Object.hasOwn(registration.actions,command.action)) throw new Error('Unknown visual action');
-            await registration.actions[command.action].run(command.value);
-          } else if (command.kind !== 'inspect') throw new Error('Unknown visual command');
-          send(command.commandId,null);
+          if (publication) {
+            // Bounded: the daemon keeps few operations per display in flight.
+            if (commands.length >= 64) throw new Error('Document command limit reached; reopen the visual');
+            commands.push(command);
+            return;
+          }
+          await execute(command);
         } catch(error) { fail(command.commandId,error); }
       });
     });

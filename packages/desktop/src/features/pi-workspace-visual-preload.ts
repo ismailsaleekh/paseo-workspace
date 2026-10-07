@@ -23,6 +23,18 @@ interface Registration {
   restore(snapshot: VisualSnapshot): unknown;
   actions: Map<string, RegisteredAction>;
 }
+/** One of this guest's receipts whose returned state has not been seen yet. */
+interface SentReceipt {
+  sequence: number;
+  base: number;
+  key: string;
+  command: boolean;
+  /** Its answer names the stored state holding this receipt's own content. */
+  advances: boolean;
+}
+type GuestCommand =
+  | { kind: "act"; commandId: string; action: string; value: Json }
+  | { kind: "inspect"; commandId: string };
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -51,6 +63,15 @@ function snapshot(value: unknown): VisualSnapshot {
     throw new Error("Visual snapshot exceeds its byte limit");
   return { state: value.state, selection: value.selection };
 }
+/** Content identity of a snapshot, independent of object key order. */
+function canonical(value: VisualSnapshot): string {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (!record(item)) return item;
+    const sorted: Record<string, unknown> = {};
+    for (const name of Object.keys(item).sort()) sorted[name] = item[name];
+    return sorted;
+  });
+}
 function binding(value: unknown): VisualBinding {
   if (
     !record(value) ||
@@ -69,13 +90,11 @@ function binding(value: unknown): VisualBinding {
     revision: value.revision,
   };
 }
+function revision(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
 function configuration(value: unknown): Configuration {
-  if (
-    !record(value) ||
-    typeof value.stateRevision !== "number" ||
-    !Number.isSafeInteger(value.stateRevision) ||
-    value.stateRevision < 1
-  )
+  if (!record(value) || !revision(value.stateRevision))
     throw new Error("Visual guest has no valid host configuration");
   if (value.commandId !== null && typeof value.commandId !== "string")
     throw new Error("Invalid render operation identity");
@@ -126,11 +145,27 @@ const config = configuration(rawConfiguration);
 let registered: Registration | null = null;
 let ready = false;
 let restoring = false;
-let stateRevision = config.stateRevision;
 let sequence = 0;
 let operations = Promise.resolve();
 const seen = new Set<string>();
 
+// State synchronization, as in the app's document bridge (`visualDocumentHtml`): the live state
+// is built on one stored state (`stateRevision`). At most one receipt (a publication or a command
+// result) awaits its answer; changes made meanwhile are published together, on the acknowledged
+// base, once it arrives, and commands received meanwhile run then. A returned state whose content
+// is one of this guest's unanswered receipts only advances the base and never replaces newer live
+// state; an older or repeated revision is ignored; a newer state from another writer is adopted
+// (unpublished local changes lose that conflict).
+let stateRevision = config.stateRevision;
+const sent: SentReceipt[] = [];
+let publication: SentReceipt | null = null;
+let wanted = false;
+let executing = false;
+const commands: GuestCommand[] = [];
+
+function awaitingAnswer(): boolean {
+  return publication !== null;
+}
 function matches(value: unknown): boolean {
   const candidate = binding(value);
   return (
@@ -140,7 +175,7 @@ function matches(value: unknown): boolean {
     candidate.clientGeneration === config.binding.clientGeneration
   );
 }
-function send(commandId: string | null, error: VisualReceipt["error"]): void {
+function emit(commandId: string | null, error: VisualReceipt["error"]): VisualReceipt {
   const observed =
     !error && registered ? snapshot(registered.read()) : { state: null, selection: null };
   const actions: VisualActions = {};
@@ -163,13 +198,34 @@ function send(commandId: string | null, error: VisualReceipt["error"]): void {
   if (new TextEncoder().encode(JSON.stringify(receipt)).length > 65536)
     throw new Error("Visual receipt exceeds its byte limit");
   ipcRenderer.send("paseo:visual:receipt", receipt);
+  return receipt;
+}
+/** Sends the current state; it stays tracked until its returned state is seen (bounded). */
+function send(commandId: string | null): SentReceipt {
+  const receipt = emit(commandId, null);
+  const entry: SentReceipt = {
+    sequence: receipt.sequence,
+    base: stateRevision,
+    key: canonical(receipt.snapshot),
+    command: commandId !== null,
+    advances: true,
+  };
+  // The oldest are never answered when nothing changed, so the list is bounded rather than
+  // drained by acknowledgements.
+  sent.push(entry);
+  if (sent.length > 64) sent.shift();
+  return entry;
 }
 function fail(commandId: string | null, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  send(commandId, {
+  emit(commandId, {
     code: "DOCUMENT_ERROR",
     message: message.slice(0, 2048) || "Visual document failed",
   });
+}
+function publishLatest(): void {
+  wanted = false;
+  publication = send(null);
 }
 contextBridge.exposeInMainWorld(
   "paseoVisual",
@@ -181,8 +237,12 @@ contextBridge.exposeInMainWorld(
     publish(): void {
       if (!ready || restoring)
         throw new Error("Visual cannot publish before readiness or during restoration");
+      if (awaitingAnswer() || executing) {
+        wanted = true;
+        return;
+      }
       try {
-        send(null, null);
+        publishLatest();
       } catch (error) {
         fail(null, error);
       }
@@ -201,7 +261,9 @@ window.addEventListener(
             throw new Error("Replacement cannot restore saved state");
         }
         ready = true;
-        send(config.commandId, null);
+        const entry = send(config.commandId);
+        // The render result is not awaited; a first publication is.
+        if (config.commandId === null) publication = entry;
         return undefined;
       })
       .catch((error: unknown) => fail(config.commandId, error));
@@ -214,53 +276,125 @@ window.addEventListener("error", (event) =>
 window.addEventListener("unhandledrejection", (event) =>
   fail(ready ? null : config.commandId, event.reason),
 );
-async function restoreStored(value: unknown): Promise<void> {
-  if (
-    !record(value) ||
-    !matches(value.binding) ||
-    typeof value.stateRevision !== "number" ||
-    !Number.isSafeInteger(value.stateRevision) ||
-    value.stateRevision < 1
-  )
-    throw new Error("Invalid visual restoration");
-  if (!ready) throw new Error("Visual restoration precedes readiness");
-  if (value.stateRevision < stateRevision) return;
-  const stored = snapshot(value.snapshot);
+
+async function execute(command: GuestCommand): Promise<void> {
+  executing = true;
+  try {
+    if (command.kind === "act") {
+      const action = registered ? registered.actions.get(command.action) : undefined;
+      if (!action) throw new Error("Unknown visual action or invalid value");
+      await action.run(command.value);
+    }
+    const entry = send(command.commandId);
+    // The result carries every local change, so it is this guest's next publication and later
+    // changes wait for its answer. An action's answer always names its own stored result; an
+    // agent read may be answered with another writer's newer state, which then arrives as a
+    // returned state.
+    entry.advances = command.kind === "act";
+    wanted = false;
+    publication = entry;
+  } catch (error) {
+    fail(command.commandId, error);
+  } finally {
+    executing = false;
+  }
+}
+/** Runs the commands that waited for an answer, then publishes changes made meanwhile. */
+async function proceed(retry: boolean): Promise<void> {
+  while (!awaitingAnswer()) {
+    const next = commands.shift();
+    if (!next) break;
+    await execute(next);
+  }
+  if (!awaitingAnswer() && (wanted || retry)) publishLatest();
+}
+async function accept(stored: number, value: VisualSnapshot): Promise<void> {
+  if (stored < stateRevision) return;
+  const key = canonical(value);
+  const own = sent.findIndex((entry) => entry.key === key);
+  if (own !== -1) {
+    // One of this guest's receipts came back: the live state already contains it and may be
+    // newer, so it is never restored over the live state.
+    sent.splice(0, own + 1);
+    stateRevision = stored;
+    return;
+  }
+  if (stored === stateRevision) return;
   restoring = true;
   try {
-    if (registered) await registered.restore(stored);
-    else if (stored.state !== null || stored.selection !== null)
+    if (registered) await registered.restore(value);
+    else if (value.state !== null || value.selection !== null)
       throw new Error("Static visual cannot restore nonempty state");
-    stateRevision = value.stateRevision;
   } finally {
     restoring = false;
   }
+  stateRevision = stored;
+  sent.length = 0;
+  publication = null;
+  wanted = false;
+  await proceed(false);
+}
+async function restoreStored(value: unknown): Promise<void> {
+  if (!record(value) || !matches(value.binding) || !revision(value.stateRevision))
+    throw new Error("Invalid visual restoration");
+  if (!ready) throw new Error("Visual restoration precedes readiness");
+  await accept(value.stateRevision, snapshot(value.snapshot));
+}
+async function acknowledged(value: unknown): Promise<void> {
+  if (!record(value) || !matches(value.binding) || !revision(value.sequence))
+    throw new Error("Invalid visual acknowledgement");
+  const raw = value.stateRevision;
+  let stored: number | null = null;
+  if (raw !== null) {
+    if (!revision(raw)) throw new Error("Invalid acknowledged state revision");
+    stored = raw;
+  }
+  if (!ready) throw new Error("Visual acknowledgement precedes readiness");
+  const answered = publication;
+  if (!answered || answered.sequence !== value.sequence) return;
+  publication = null;
+  if (stored !== null && answered.advances && stored > stateRevision) stateRevision = stored;
+  // A publication rejected only because the stored state advanced with this guest's own receipts
+  // is published again on that base; any other rejection waits for the next change. A rejected
+  // command result is never repeated: the agent was told that it failed.
+  const retry = stored === null && !answered.command && answered.base < stateRevision;
+  await proceed(retry);
+}
+function guestCommand(value: unknown): GuestCommand {
+  if (!record(value) || !matches(value.binding) || typeof value.commandId !== "string")
+    throw new Error("Invalid visual command");
+  if (value.kind === "inspect") return { kind: "inspect", commandId: value.commandId };
+  if (value.kind !== "act") throw new Error("Unknown visual command");
+  if (typeof value.action !== "string" || !json(value.value))
+    throw new Error("Unknown visual action or invalid value");
+  return { kind: "act", commandId: value.commandId, action: value.action, value: value.value };
 }
 ipcRenderer.on("paseo:visual:restore", (_event, value: unknown) => {
   operations = operations
     .then(() => restoreStored(value))
     .catch((error: unknown) => fail(null, error));
 });
+ipcRenderer.on("paseo:visual:ack", (_event, value: unknown) => {
+  operations = operations
+    .then(() => acknowledged(value))
+    .catch((error: unknown) => fail(null, error));
+});
 ipcRenderer.on("paseo:visual:command", (_event, value: unknown) => {
   const commandId = record(value) && typeof value.commandId === "string" ? value.commandId : null;
   operations = operations
     .then(async () => {
-      if (!record(value) || !matches(value.binding) || commandId === null)
-        throw new Error("Invalid visual command");
+      const command = guestCommand(value);
       if (!ready) throw new Error("Visual command precedes readiness");
-      if (seen.has(commandId) || seen.size >= 4096)
+      if (seen.has(command.commandId) || seen.size >= 4096)
         throw new Error("Visual command identity exhausted or repeated");
-      seen.add(commandId);
-      if (value.kind === "act") {
-        const action =
-          registered && typeof value.action === "string"
-            ? registered.actions.get(value.action)
-            : undefined;
-        if (!action || !json(value.value))
-          throw new Error("Unknown visual action or invalid value");
-        await action.run(value.value);
-      } else if (value.kind !== "inspect") throw new Error("Unknown visual command");
-      send(commandId, null);
+      seen.add(command.commandId);
+      if (awaitingAnswer()) {
+        // Bounded: the desktop host admits few pending commands per guest.
+        if (commands.length >= 64) throw new Error("Visual command limit reached");
+        commands.push(command);
+        return undefined;
+      }
+      await execute(command);
       return undefined;
     })
     .catch((error: unknown) => fail(commandId, error));

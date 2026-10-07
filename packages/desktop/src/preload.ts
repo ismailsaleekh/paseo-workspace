@@ -43,6 +43,9 @@ const visuals: DesktopVisualBridge = {
   async restore(input) {
     await ipcRenderer.invoke("paseo:visual:restore", input);
   },
+  async acknowledge(input) {
+    await ipcRenderer.invoke("paseo:visual:ack", input);
+  },
   async dispose(input) {
     await ipcRenderer.invoke("paseo:visual:dispose", input);
   },

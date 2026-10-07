@@ -219,16 +219,29 @@ export const DesktopVisualStateSchema = z
     stateRevision: VisualRevisionSchema,
   })
   .strict();
+/**
+ * The daemon's answer to one guest receipt the guest waits for (a publication or a command
+ * result): the stored state revision that holds it, or `null` when it was rejected.
+ */
+export const DesktopVisualAcknowledgementSchema = z
+  .object({
+    binding: VisualBindingSchema,
+    sequence: z.number().int().positive(),
+    stateRevision: VisualRevisionSchema.nullable(),
+  })
+  .strict();
 export type DesktopVisualMount = z.infer<typeof DesktopVisualMountSchema>;
 export type DesktopVisualBoundsUpdate = z.infer<typeof DesktopVisualBoundsUpdateSchema>;
 export type DesktopVisualCommand = z.infer<typeof DesktopVisualCommandSchema>;
 export type DesktopVisualState = z.infer<typeof DesktopVisualStateSchema>;
 export type DesktopVisualAddress = z.infer<typeof DesktopVisualAddressSchema>;
+export type DesktopVisualAcknowledgement = z.infer<typeof DesktopVisualAcknowledgementSchema>;
 export interface DesktopVisualBridge {
   mount(input: DesktopVisualMount): Promise<void>;
   bounds(input: DesktopVisualBoundsUpdate): Promise<void>;
   command(input: DesktopVisualCommand): Promise<void>;
   restore(input: DesktopVisualState): Promise<void>;
+  acknowledge(input: DesktopVisualAcknowledgement): Promise<void>;
   dispose(input: DesktopVisualAddress): Promise<void>;
 }
 

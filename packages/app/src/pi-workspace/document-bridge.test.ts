@@ -29,12 +29,23 @@ const current: VisualRenderDocument = {
   },
 };
 const FieldsSchema = z.object({ state: z.object({ text: z.string() }), selection: z.null() });
+const CountedSchema = z.object({
+  state: z.object({ text: z.string(), count: z.number().int() }),
+  selection: z.null(),
+});
+const actId = "d3f9f1d6-55a4-4c55-9f0b-0f4f8e2b6a01";
+const readId = "e8a1c3b2-7d64-4f1e-8a2b-3c4d5e6f7a80";
 
 type Listener = (event: unknown) => unknown;
+interface Action {
+  description: string;
+  parameters: { type: "object" };
+  run(value: unknown): void;
+}
 interface Registration {
   read(): unknown;
   restore(snapshot: unknown): void;
-  actions: Record<string, never>;
+  actions: Record<string, Action>;
 }
 interface PaseoVisual {
   register(registration: Registration): void;
@@ -57,6 +68,8 @@ class DocumentHost {
   readonly receipts: VisualReceipt[] = [];
   readonly restored: string[] = [];
   text = "";
+  /** The agent action count of a counting document (its state then also holds `count`). */
+  count = 0;
   private readonly listeners = new Map<string, Listener[]>();
   private readonly parent = {
     postMessage: (message: unknown) => {
@@ -67,7 +80,11 @@ class DocumentHost {
   };
   private readonly visual: PaseoVisual;
 
-  constructor(commandId: string | null, document: VisualRenderDocument = current) {
+  constructor(
+    commandId: string | null,
+    document: VisualRenderDocument = current,
+    counting = false,
+  ) {
     const html = visualDocumentHtml({ current: document, commandId, platform: "web" });
     const open = html.indexOf("<script>");
     const start = open + "<script>".length;
@@ -84,13 +101,33 @@ class DocumentHost {
     if (!isPaseoVisual(visual)) throw new Error("The bridge did not expose paseoVisual");
     this.visual = visual;
     this.visual.register({
-      read: () => ({ state: { text: this.text }, selection: null }),
+      read: () =>
+        counting
+          ? { state: { text: this.text, count: this.count }, selection: null }
+          : { state: { text: this.text }, selection: null },
       restore: (snapshot) => {
+        if (counting) {
+          const restored = CountedSchema.parse(snapshot).state;
+          this.restored.push(restored.text);
+          this.text = restored.text;
+          this.count = restored.count;
+          return;
+        }
         const restored = FieldsSchema.parse(snapshot).state.text;
         this.restored.push(restored);
         this.text = restored;
       },
-      actions: {},
+      actions: counting
+        ? {
+            increment: {
+              description: "Add one",
+              parameters: { type: "object" },
+              run: () => {
+                this.count += 1;
+              },
+            },
+          }
+        : {},
     });
   }
 
@@ -128,6 +165,48 @@ class DocumentHost {
 
   async message(data: unknown): Promise<void> {
     this.dispatch("message", { source: this.parent, data });
+    await settle();
+  }
+
+  /** An agent operation delivered by the app, as the displays do for the current command. */
+  async command(kind: "act" | "inspect", commandId: string): Promise<void> {
+    const command =
+      kind === "act"
+        ? { kind, commandId, binding: current.binding, action: "increment", value: {} }
+        : { kind, commandId, binding: current.binding };
+    await this.message({ type: "paseo-visual-command", command });
+  }
+
+  /** Every receipt of a counting document, with the command it answers. */
+  counted(): Array<{
+    sequence: number;
+    commandId: string | null;
+    base: number | undefined;
+    text: string | null;
+    count: number | null;
+  }> {
+    return this.receipts.map((receipt) => {
+      const state = receipt.error ? null : CountedSchema.parse(receipt.snapshot).state;
+      return {
+        sequence: receipt.sequence,
+        commandId: receipt.commandId,
+        base: receipt.stateRevision,
+        text: state ? state.text : null,
+        count: state ? state.count : null,
+      };
+    });
+  }
+
+  async storedCount(stateRevision: number, text: string, count: number): Promise<void> {
+    const document = {
+      ...current.document,
+      stateRevision,
+      snapshot: { state: { text, count }, selection: null },
+    };
+    this.dispatch("message", {
+      source: this.parent,
+      data: visualStateMessage({ binding: current.binding, document }),
+    });
     await settle();
   }
 
@@ -266,4 +345,59 @@ test("acknowledgements for other documents or other publications are ignored and
   assert.equal(failure?.error?.message, "Invalid acknowledged state revision");
   await host.acknowledged(2, 2);
   assert.deepEqual(host.published().at(-1), { sequence: 4, base: 2, text: "xy" });
+});
+
+test("an agent action arriving while a publication awaits its answer runs once on the acknowledged base and later edits wait for its answer", async () => {
+  const host = new DocumentHost(renderId, current, true);
+  await host.load();
+  host.edit("a");
+  await host.command("act", actId);
+  host.edit("ab");
+  assert.equal(host.count, 0, "The action waits for the publication's answer");
+  assert.equal(host.receipts.length, 2);
+  await host.acknowledged(2, 2);
+  host.edit("abc");
+  await host.storedCount(3, "ab", 1);
+  await host.acknowledged(3, 3);
+  assert.deepEqual(host.counted(), [
+    { sequence: 1, commandId: renderId, base: 1, text: "", count: 0 },
+    { sequence: 2, commandId: null, base: 1, text: "a", count: 0 },
+    { sequence: 3, commandId: actId, base: 2, text: "ab", count: 1 },
+    { sequence: 4, commandId: null, base: 3, text: "abc", count: 1 },
+  ]);
+  assert.deepEqual(host.restored, []);
+  assert.equal(host.count, 1);
+});
+
+test("an agent read waits for the publication's answer and a read answered with another writer's state lets that state replace the display", async () => {
+  const host = new DocumentHost(renderId);
+  await host.load();
+  host.edit("mine");
+  await host.command("inspect", readId);
+  assert.equal(host.receipts.length, 2);
+  await host.acknowledged(2, 2);
+  assert.deepEqual(host.published(), [
+    { sequence: 1, base: 1, text: "" },
+    { sequence: 2, base: 1, text: "mine" },
+    { sequence: 3, base: 2, text: "mine" },
+  ]);
+  // Another writer stored revision 5 meanwhile; the read is answered with that state.
+  await host.acknowledged(3, 5);
+  await host.stored(5, "theirs");
+  assert.deepEqual(host.restored, ["theirs"]);
+  host.edit("theirs!");
+  assert.deepEqual(host.published().at(-1), { sequence: 4, base: 5, text: "theirs!" });
+});
+
+test("a rejected action result is never repeated and the stored state that rejected it replaces its effect", async () => {
+  const host = new DocumentHost(renderId, current, true);
+  await host.load();
+  await host.command("act", actId);
+  assert.equal(host.count, 1);
+  await host.acknowledged(2, null);
+  assert.equal(host.receipts.length, 2);
+  await host.storedCount(2, "theirs", 0);
+  assert.deepEqual(host.restored, ["theirs"]);
+  assert.equal(host.count, 0);
+  assert.equal(host.receipts.length, 2);
 });

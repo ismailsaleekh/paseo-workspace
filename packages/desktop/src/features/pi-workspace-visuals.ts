@@ -19,6 +19,7 @@ import {
   type VisualCapture,
 } from "@getpaseo/protocol/pi-workspace/contracts";
 import {
+  DesktopVisualAcknowledgementSchema,
   DesktopVisualAddressSchema,
   DesktopVisualBoundsUpdateSchema,
   DesktopVisualCommandSchema,
@@ -329,7 +330,10 @@ interface Guest {
   pending: Set<string>;
   captures: Map<string, Extract<VisualCommand, { kind: "inspect" }>>;
   captureAbort: AbortController | null;
+  /** The stored state revision the guest's live state is built on, from its own receipts. */
   stateRevision: number;
+  /** The newest stored state revision relayed to the guest (mount, restoration, answer). */
+  announced: number;
   epoch: number;
   visible: boolean;
 }
@@ -371,8 +375,25 @@ export class PiWorkspaceVisuals {
         throw new VisualFailure("DOCUMENT_UNRESPONSIVE", "Reopen the terminated visual");
       guest.epoch += 1;
       guest.captureAbort?.abort();
-      guest.stateRevision = input.stateRevision;
+      // The guest never moves back to an older stored state (it ignores older restorations).
+      guest.stateRevision = Math.max(guest.stateRevision, input.stateRevision);
+      guest.announced = Math.max(guest.announced, input.stateRevision);
       guest.view.webContents.send("paseo:visual:restore", input);
+    });
+    ipc.handle("paseo:visual:ack", (event, value: unknown) => {
+      assertVisualJsonBound(value, 4096);
+      const input = DesktopVisualAcknowledgementSchema.parse(value);
+      const guest = this.ownedGuest(event, input.binding.nonce);
+      this.checkBinding(guest, input.binding);
+      if (guest.terminated)
+        throw new VisualFailure("DOCUMENT_UNRESPONSIVE", "Reopen the terminated visual");
+      if (input.sequence > guest.sequence)
+        throw new VisualFailure("INVALID_DATA", "Acknowledgement names an unsent visual receipt");
+      // Only the guest's own next receipt shows that it continued on this base; the capture
+      // check follows those receipts, not this answer.
+      if (input.stateRevision !== null)
+        guest.announced = Math.max(guest.announced, input.stateRevision);
+      guest.view.webContents.send("paseo:visual:ack", input);
     });
     ipc.handle("paseo:visual:dispose", (event, value: unknown) => {
       const host = this.host(event);
@@ -524,6 +545,7 @@ export class PiWorkspaceVisuals {
         captures: new Map(),
         captureAbort: null,
         stateRevision: input.current.document.stateRevision,
+        announced: input.current.document.stateRevision,
         epoch: 0,
         visible: true,
       };
@@ -617,7 +639,13 @@ export class PiWorkspaceVisuals {
       this.checkBinding(guest, receipt.binding);
       if (receipt.sequence <= guest.sequence)
         throw new VisualFailure("STALE_STATE", "Repeated visual receipt");
+      // A guest continues only on stored states this host relayed to it; the base it names is
+      // the state its display shows, which an answer can advance without a restoration.
+      const base = receipt.stateRevision ?? guest.stateRevision;
+      if (base > guest.announced)
+        throw new VisualFailure("INVALID_DATA", "Visual receipt names an unknown stored state");
       guest.sequence = receipt.sequence;
+      if (!receipt.error) guest.stateRevision = Math.max(guest.stateRevision, base);
       const key = receipt.commandId === null ? "mount" : receipt.commandId;
       const request = guest.captures.get(key);
       guest.deadlines.settle(key);
