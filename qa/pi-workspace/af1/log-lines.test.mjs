@@ -100,3 +100,79 @@ test("back-to-back warnings are attributed separately", () => {
   assert.deepEqual(internal, [internalWarning[1]]);
   assert.deepEqual(companion, [companionCall[0]]);
 });
+
+test("every incomplete prefix of a WebView stack remains a failing warning", () => {
+  for (let end = 2; end < 9; end += 1) {
+    const lines = internalWarning.slice(0, end);
+    assert.deepEqual(
+      destroyedWebViewCalls(lines),
+      {
+        companion: [internalWarning[1]],
+        internal: [],
+      },
+      `stack truncated at record ${end}`,
+    );
+  }
+});
+
+test("an unknown caller is not internal merely because its package is not sh.paseo", () => {
+  for (const index of [4, 6]) {
+    const lines = internalWarning.toSpliced(
+      index,
+      0,
+      "10-07 13:11:16.481  5238  5238 W cr_AwContents: \tat external.library.Callback.run(Callback.java:20)",
+    );
+    assert.deepEqual(destroyedWebViewCalls(lines), {
+      companion: [internalWarning[1]],
+      internal: [],
+    });
+  }
+});
+
+test("a platform WebView API call is not the proven native-dispatched internal callback", () => {
+  const lines = internalWarning.toSpliced(
+    5,
+    1,
+    "10-07 13:11:16.481  5238  5238 W cr_AwContents: \tat android.webkit.WebView.evaluateJavascript(WebView.java:1)",
+  );
+  assert.deepEqual(destroyedWebViewCalls(lines), {
+    companion: [internalWarning[1]],
+    internal: [],
+  });
+});
+
+test("malformed, elided or missing stack records cannot justify an internal classification", () => {
+  const variants = [
+    internalWarning.toSpliced(2, 1),
+    internalWarning.toSpliced(4, 1, "10-07 13:11:16.481  5238  5238 W cr_AwContents: \t... 1 more"),
+    internalWarning.map((line, index) => (index === 4 ? line.slice(0, -1) : line)),
+  ];
+  for (const lines of variants) {
+    assert.deepEqual(destroyedWebViewCalls(lines), {
+      companion: [internalWarning[1]],
+      internal: [],
+    });
+  }
+});
+
+test("an unrelated record interrupting a partial stack does not turn it into an internal callback", () => {
+  for (const index of [4, 5, 8]) {
+    const lines = internalWarning.toSpliced(
+      index,
+      0,
+      "10-07 13:11:16.481  5238  5262 W PaseoVisualHost: unrelated callback",
+    );
+    assert.deepEqual(destroyedWebViewCalls(lines), {
+      companion: [internalWarning[1]],
+      internal: [],
+    });
+  }
+});
+
+test("a second warning cannot finish the partial stack of the first one", () => {
+  const lines = [...internalWarning.slice(0, 4), ...internalWarning.slice(1)];
+  assert.deepEqual(destroyedWebViewCalls(lines), {
+    companion: [internalWarning[1]],
+    internal: [internalWarning[1]],
+  });
+});
