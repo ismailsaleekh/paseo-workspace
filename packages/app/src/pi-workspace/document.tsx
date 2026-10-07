@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { htmlPreviewNavigationKind } from "../file-pane/html-preview-navigation";
 import {
+  visualAcknowledgementMessage,
   visualDocumentHtml,
   visualStateMessage,
   type VisualDocumentProps,
@@ -13,6 +14,7 @@ const style = { flex: 1, minHeight: 280, backgroundColor: "white" } as const;
 export function VisualDocument({
   current,
   restoration,
+  acknowledgement,
   renderCommandId,
   command,
   receive,
@@ -57,6 +59,20 @@ export function VisualDocument({
       `window.dispatchEvent(new MessageEvent('message',{data:${data}}));true;`,
     );
   }, [restoration, reportError]);
+  useEffect(() => {
+    if (!acknowledgement) return;
+    if (!webview.current) {
+      reportError(new Error("Visual document is not mounted for acknowledgement"));
+      return;
+    }
+    const data = JSON.stringify(visualAcknowledgementMessage(acknowledgement)).replace(
+      /</g,
+      "\\u003c",
+    );
+    webview.current.injectJavaScript(
+      `window.dispatchEvent(new MessageEvent('message',{data:${data}}));true;`,
+    );
+  }, [acknowledgement, reportError]);
   useEffect(() => {
     if (!command) return;
     if (!webview.current) {

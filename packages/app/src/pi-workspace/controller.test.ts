@@ -359,3 +359,41 @@ test("late acknowledgements after stop cannot restore an obsolete surface", asyn
   await Promise.resolve();
   assert.equal(controller.getSnapshot(), stopped);
 });
+
+test("each document publication is acknowledged with the daemon's stored revision or a rejection", async () => {
+  const transport = new Transport();
+  const controller = new VisualController(transport, agentId);
+  controller.start();
+  render(transport);
+  controller.receive({ type: "paseo-visual", receipt: receipt() });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(
+    controller.getSnapshot().acknowledgement,
+    null,
+    "Command receipts are not publications",
+  );
+  controller.receive({
+    type: "paseo-visual",
+    receipt: { ...receipt(2), commandId: null, stateRevision: 1 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(controller.getSnapshot().acknowledgement, {
+    binding: current.binding,
+    sequence: 2,
+    stateRevision: 2,
+  });
+  transport.failure = new Error("Stored state changed");
+  controller.receive({
+    type: "paseo-visual",
+    receipt: { ...receipt(3), commandId: null, stateRevision: 2 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(controller.getSnapshot().acknowledgement, {
+    binding: current.binding,
+    sequence: 3,
+    stateRevision: null,
+  });
+  assert.equal(controller.getSnapshot().error, "Stored state changed");
+  await controller.stop();
+  assert.equal(controller.getSnapshot().acknowledgement, null);
+});

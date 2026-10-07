@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import {
+  visualAcknowledgementMessage,
   visualDocumentHtml,
   visualStateMessage,
   type VisualDocumentProps,
@@ -16,6 +17,7 @@ const frameStyle = {
 export function VisualDocument({
   current,
   restoration,
+  acknowledgement,
   renderCommandId,
   command,
   receive,
@@ -43,6 +45,15 @@ export function VisualDocument({
     }
     target.postMessage(visualStateMessage(restoration), "*");
   }, [restoration, reportError]);
+  useEffect(() => {
+    if (!acknowledgement) return;
+    const target = frame.current?.contentWindow;
+    if (!target) {
+      reportError(new Error("Visual document is not mounted for acknowledgement"));
+      return;
+    }
+    target.postMessage(visualAcknowledgementMessage(acknowledgement), "*");
+  }, [acknowledgement, reportError]);
   useEffect(() => {
     if (!command) return;
     const target = frame.current?.contentWindow;

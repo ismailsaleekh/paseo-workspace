@@ -1016,3 +1016,44 @@ test("disconnect and cancellation settle pending operations without accepting a 
     next.release();
   });
 });
+
+test("a publication is answered with the stored revision that holds it, including an unchanged one", async () => {
+  await withService(async (service, storage) => {
+    const display = new Display(service);
+    await service.observe({ agentId: owner.agentId, source: display.source, emit: display.emit });
+    const signal = new AbortController().signal;
+    const presenting = service.execute(
+      owner,
+      { kind: "present", title: "Answers", html: "<p>answers</p>" },
+      signal,
+    );
+    const render = await display.next();
+    if (render.kind !== "render") throw new Error("Expected a render command");
+    await display.acknowledge(render, { state: { angle: 1 }, selection: null });
+    const shown = await presenting;
+    if (shown.kind !== "visual") throw new Error("Expected visual");
+    const publish = (sequence: number, stateRevision: number, angle: number) =>
+      service.receive({
+        agentId: owner.agentId,
+        source: display.source,
+        receipt: {
+          binding: render.current.binding,
+          commandId: null,
+          sequence,
+          stateRevision,
+          snapshot: { state: { angle }, selection: null },
+          actions,
+          error: null,
+        },
+      });
+    const events = display.snapshots.length;
+    assert.equal(await publish(2, shown.stateRevision, 2), shown.stateRevision + 1);
+    assert.equal(display.snapshots.length, events + 1);
+    assert.equal(await publish(3, shown.stateRevision + 1, 2), shown.stateRevision + 1);
+    assert.equal(display.snapshots.length, events + 1, "An unchanged publication emits no state");
+    assert.deepEqual((await storage.get({ owner, id: shown.id })).snapshot, {
+      state: { angle: 2 },
+      selection: null,
+    });
+  });
+});

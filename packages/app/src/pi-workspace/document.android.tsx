@@ -33,6 +33,7 @@ function explanation(error: VisualError): string {
 export function VisualDocument({
   current,
   restoration,
+  acknowledgement,
   renderCommandId,
   command,
   receive,
@@ -60,6 +61,9 @@ export function VisualDocument({
   useEffect(() => {
     if (restoration) adapter.restore(restoration);
   }, [adapter, restoration]);
+  useEffect(() => {
+    if (acknowledgement) adapter.acknowledge(acknowledgement);
+  }, [adapter, acknowledgement]);
   useEffect(() => {
     if (command) adapter.command(command);
   }, [adapter, command]);

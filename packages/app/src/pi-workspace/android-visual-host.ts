@@ -13,7 +13,13 @@ import {
   type VisualReceipt,
   type VisualRenderDocument,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
-import { DocumentMessageSchema, visualDocumentHtml, visualStateMessage } from "./document-bridge";
+import {
+  DocumentMessageSchema,
+  visualAcknowledgementMessage,
+  visualDocumentHtml,
+  visualStateMessage,
+  type VisualAcknowledgement,
+} from "./document-bridge";
 
 /** The Paseo Android visual host module. Every call addresses one document session. */
 export interface AndroidVisualNative {
@@ -150,6 +156,11 @@ export class AndroidVisualAdapter {
   restore(restoration: VisualRenderDocument): void {
     if (this.disposed || this.failure) return;
     this.post(JSON.stringify(visualStateMessage(restoration)));
+  }
+
+  acknowledge(acknowledgement: VisualAcknowledgement): void {
+    if (this.disposed || this.failure) return;
+    this.post(JSON.stringify(visualAcknowledgementMessage(acknowledgement)));
   }
 
   hostEvent(value: unknown): void {

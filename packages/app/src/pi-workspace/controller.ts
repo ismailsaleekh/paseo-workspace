@@ -15,7 +15,7 @@ import {
   type VisualRenderDocument,
   type VisualView,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
-import { DocumentMessageSchema } from "./document-bridge";
+import { DocumentMessageSchema, type VisualAcknowledgement } from "./document-bridge";
 import {
   speechReceipt,
   type SpeechClientSignal,
@@ -47,6 +47,8 @@ export interface VisualSurfaceState {
   status: "loading" | "ready" | "error" | "disconnected";
   current: VisualRenderDocument | null;
   restoration: VisualRenderDocument | null;
+  /** The latest answer to the current document's publication (see `visualDocumentHtml`). */
+  acknowledgement: VisualAcknowledgement | null;
   renderCommandId: string | null;
   command: Exclude<VisualCommand, { kind: "render" }> | null;
   error: string | null;
@@ -57,6 +59,7 @@ export class VisualController {
     status: "loading",
     current: null,
     restoration: null,
+    acknowledgement: null,
     renderCommandId: null,
     command: null,
     error: null,
@@ -143,6 +146,7 @@ export class VisualController {
           status: "disconnected",
           current: null,
           restoration: null,
+          acknowledgement: null,
           renderCommandId: null,
           command: null,
           error: "Visual host disconnected; reconnect to restore the saved visual",
@@ -198,6 +202,7 @@ export class VisualController {
         status: "loading",
         current: null,
         restoration: null,
+        acknowledgement: null,
         renderCommandId: null,
         command: null,
         error: null,
@@ -235,6 +240,7 @@ export class VisualController {
       status: next ? "loading" : "ready",
       current: next,
       restoration: null,
+      acknowledgement: null,
       renderCommandId: null,
       command: null,
       error: null,
@@ -273,6 +279,7 @@ export class VisualController {
         status: "loading",
         current: command.current,
         restoration: null,
+        acknowledgement: null,
         renderCommandId: command.commandId,
         command: null,
         error: null,
@@ -329,20 +336,28 @@ export class VisualController {
       const lifetime = this.lifetime;
       const nonce = current.binding.nonce;
       if (receipt.error) this.reportError(new Error(receipt.error.message));
+      // A document publication (a state receipt without a command) waits for this answer before
+      // it publishes again, so every outcome is acknowledged to the document.
+      const publication = receipt.commandId === null && receipt.error === null;
+      const acknowledge = (stateRevision: number | null): VisualAcknowledgement | null =>
+        publication
+          ? { binding: receipt.binding, sequence: receipt.sequence, stateRevision }
+          : null;
       void this.client.sendPiWorkspaceReceipt(this.agentId, receipt).then(
-        () => {
-          if (
-            lifetime === this.lifetime &&
-            this.state.current?.binding.nonce === nonce &&
-            receipt.error === null
-          ) {
-            this.update({ ...this.state, status: "ready", error: null });
+        (result) => {
+          if (lifetime !== this.lifetime || this.state.current?.binding.nonce !== nonce)
+            return undefined;
+          const acknowledgement = acknowledge(result.stateRevision) ?? this.state.acknowledgement;
+          if (receipt.error === null) {
+            this.update({ ...this.state, status: "ready", error: null, acknowledgement });
           }
           return undefined;
         },
         (error: unknown) => {
-          if (lifetime === this.lifetime && this.state.current?.binding.nonce === nonce)
-            this.reportError(error);
+          if (lifetime !== this.lifetime || this.state.current?.binding.nonce !== nonce) return;
+          const acknowledgement = acknowledge(null);
+          if (acknowledgement) this.update({ ...this.state, acknowledgement });
+          this.reportError(error);
         },
       );
     } catch (error) {

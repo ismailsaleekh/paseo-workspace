@@ -135,6 +135,7 @@ function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
             key={state.current.binding.nonce}
             current={state.current}
             restoration={state.restoration}
+            acknowledgement={state.acknowledgement}
             renderCommandId={state.renderCommandId}
             command={state.command}
             receive={controller.receive}

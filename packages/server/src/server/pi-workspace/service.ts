@@ -926,7 +926,9 @@ export class VisualService {
         this.rejectReceipt({ peer, receipt }, receipt.error, pending);
         return current.document.stateRevision;
       }
-      if (pending?.kind !== "render") await this.publishReceipt({ peer, receipt }, validated);
+      let stored: number | null = null;
+      if (pending?.kind !== "render")
+        stored = await this.publishReceipt({ peer, receipt }, validated);
       if (pending && receipt.commandId) {
         peer.pending.delete(receipt.commandId);
         pending.cleanup();
@@ -938,7 +940,9 @@ export class VisualService {
           "Visual display changed while committing its receipt",
         );
       }
-      return peer.current.document.stateRevision;
+      // The answer names the stored revision this receipt produced (or found unchanged), so a
+      // publishing document can continue on exactly that base.
+      return stored ?? peer.current.document.stateRevision;
     } catch (error) {
       await this.receiptFailure({ peer, receipt }, error);
       throw error;
@@ -1013,7 +1017,7 @@ export class VisualService {
   private async publishReceipt(
     { peer, receipt }: ReceiptValidationInput,
     { current, snapshot, actions, pending }: ValidatedVisualReceipt,
-  ): Promise<void> {
+  ): Promise<number> {
     const owner = this.activeOwners.get(peer.agentId);
     if (!owner) throw new VisualFailure("STALE_SESSION", "No Pi session owns this visual");
     if (receipt.capture) {
@@ -1027,7 +1031,7 @@ export class VisualService {
           "Capture did not observe the authoritative stored state",
         );
       peer.actions = actions;
-      return;
+      return stored.stateRevision;
     }
     // COMPAT(visualStateBase): added in v0.10.3; remove after 2027-04-04 once all
     // visual clients publish an explicit base. V1 receipts use their bound view's base.
@@ -1065,6 +1069,7 @@ export class VisualService {
     const unchangedForAll =
       updated === authoritative && stateRevision === authoritative.stateRevision;
     if (!unchangedForAll) this.synchronize(owner, updated);
+    return updated.stateRevision;
   }
 
   /** Saves a publication; a concurrent change only fails publications, never agent reads. */

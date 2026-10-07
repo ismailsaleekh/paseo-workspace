@@ -11,9 +11,20 @@ import { withPreviewCsp } from "../file-pane/html-preview-csp";
 export const DocumentMessageSchema = z
   .object({ type: z.literal("paseo-visual"), receipt: VisualReceiptSchema })
   .strict();
+/**
+ * The daemon's answer to one document publication (a state receipt without a command): the
+ * stored state revision that now holds the published state, or `null` when it was rejected.
+ */
+export interface VisualAcknowledgement {
+  binding: VisualBinding;
+  sequence: number;
+  stateRevision: number | null;
+}
 export interface VisualDocumentProps {
   current: VisualRenderDocument;
   restoration?: VisualRenderDocument | null;
+  /** Bridges built by `visualDocumentHtml` need it to publish their next change. */
+  acknowledgement?: VisualAcknowledgement | null;
   renderCommandId: string | null;
   command: Exclude<VisualCommand, { kind: "render" }> | null;
   receive(value: unknown): void;
@@ -26,6 +37,12 @@ export interface VisualStateMessage {
   snapshot: VisualSnapshot;
   stateRevision: number;
 }
+export interface VisualAcknowledgementMessage {
+  type: "paseo-visual-ack";
+  binding: VisualBinding;
+  sequence: number;
+  stateRevision: number | null;
+}
 
 export function visualStateMessage(current: VisualRenderDocument): VisualStateMessage {
   return {
@@ -36,6 +53,17 @@ export function visualStateMessage(current: VisualRenderDocument): VisualStateMe
   };
 }
 
+export function visualAcknowledgementMessage(
+  acknowledgement: VisualAcknowledgement,
+): VisualAcknowledgementMessage {
+  return {
+    type: "paseo-visual-ack",
+    binding: acknowledgement.binding,
+    sequence: acknowledgement.sequence,
+    stateRevision: acknowledgement.stateRevision,
+  };
+}
+
 interface BridgeDocumentInput {
   current: VisualRenderDocument;
   commandId: string | null;
@@ -43,7 +71,18 @@ interface BridgeDocumentInput {
   platform: "web" | "native" | "android";
 }
 
-/** Only the document identity, saved snapshot and narrow commands cross the sandbox. */
+/**
+ * Only the document identity, saved snapshot and narrow commands cross the sandbox.
+ *
+ * State synchronization inside the document: the live state is built on one stored state
+ * (`stateRevision` and its content). At most one publication awaits its acknowledgement; changes
+ * made meanwhile are published together, on the acknowledged base, once it arrives. A returned
+ * state whose content is one of the document's own unanswered receipts confirms that receipt and
+ * never replaces the newer live state; an older or repeated revision is ignored; a newer state
+ * from another writer is adopted (unpublished local changes lose that conflict). Known limitation:
+ * a different writer storing exactly the content of one of the unanswered receipts is taken as an
+ * own returned state (its content already equals a state this document published).
+ */
 export function visualDocumentHtml(input: BridgeDocumentInput): string {
   const configuration = JSON.stringify({
     binding: input.current.binding,
@@ -63,12 +102,26 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
     let ready = false;
     let sequence = 0;
     let stateRevision = config.stateRevision;
+    const sent = [];
+    let publication = null;
+    let wanted = false;
     let restoring = false;
     let resolveReady;
     const readiness = new Promise(resolve => { resolveReady = resolve; });
     let operation = Promise.resolve();
     const seen = new Set();
     const empty = {state:null, selection:null};
+    function canonical(value) {
+      return JSON.stringify(value, (key, item) => {
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) return item;
+        const sorted = {};
+        for (const name of Object.keys(item).sort()) sorted[name] = item[name];
+        return sorted;
+      });
+    }
+    function bound(binding) {
+      return !!binding && binding.nonce === config.binding.nonce && binding.clientGeneration === config.binding.clientGeneration && binding.id === config.binding.id && binding.revision === config.binding.revision;
+    }
     function send(commandId, error) {
       let snapshot = empty;
       let actions = {};
@@ -83,10 +136,51 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       if (config.platform === 'native') window.ReactNativeWebView.postMessage(message);
       else if (hostPort) hostPort.postMessage(message);
       else window.parent.postMessage(JSON.parse(message),'*');
+      if (error) return null;
+      // Receipts whose returned state has not been seen yet; the oldest are never answered when
+      // nothing changed, so the list is bounded rather than drained by acknowledgements.
+      const entry = {sequence:receipt.sequence, base:receipt.stateRevision, key:canonical(snapshot)};
+      sent.push(entry);
+      if (sent.length > 64) sent.shift();
+      return entry;
     }
     function fail(commandId, error) {
       const message = error instanceof Error ? error.message : String(error);
       send(commandId, {code:'DOCUMENT_ERROR',message:message.slice(0,2048) || 'Visual document failed'});
+    }
+    function publishLatest() {
+      wanted = false;
+      publication = send(null,null);
+    }
+    async function accept(revision, snapshot) {
+      if (revision < stateRevision) return;
+      const key = canonical(snapshot);
+      const own = sent.findIndex(entry => entry.key === key);
+      if (own !== -1) {
+        // One of this document's receipts came back: the live state already contains it and may
+        // be newer, so it is never restored over the live state.
+        sent.splice(0, own + 1);
+        stateRevision = revision;
+        return;
+      }
+      if (revision === stateRevision) return;
+      restoring = true;
+      if (registration) await registration.restore(structuredClone(snapshot));
+      else if (snapshot.state !== null || snapshot.selection !== null) throw new Error('Static document cannot restore nonempty state');
+      stateRevision = revision;
+      sent.length = 0;
+      publication = null;
+      wanted = false;
+    }
+    function acknowledge(acknowledged, stored) {
+      const answered = publication;
+      if (!answered || answered.sequence !== acknowledged) return;
+      publication = null;
+      if (stored !== null && stored > stateRevision) stateRevision = stored;
+      // A publication rejected only because the stored state advanced with this document's own
+      // receipts is published again on that base; any other rejection waits for the next change.
+      const retry = stored === null && answered.base < stateRevision;
+      if (wanted || retry) publishLatest();
     }
     Object.defineProperty(window,'paseoVisual',{value:Object.freeze({
       register(value) {
@@ -100,7 +194,8 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       },
       publish() {
         if (!ready || restoring) throw new Error('Visual cannot publish before readiness or during restoration');
-        try { send(null,null); } catch(error) { fail(null,error); }
+        if (publication) { wanted = true; return; }
+        try { publishLatest(); } catch(error) { fail(null,error); }
       }
     }),writable:false,configurable:false});
     window.addEventListener('load',async () => {
@@ -110,7 +205,8 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
           if (registration) await registration.restore(structuredClone(config.snapshot));
         }
         ready = true;
-        send(config.commandId,null);
+        const entry = send(config.commandId,null);
+        if (config.commandId === null) publication = entry;
       } catch(error) { fail(config.commandId,error); }
       finally { resolveReady(); }
     },{once:true});
@@ -121,26 +217,36 @@ export function visualDocumentHtml(input: BridgeDocumentInput): string {
       const envelope = event.data;
       if (!envelope) return;
       if (envelope.type === 'paseo-visual-state') {
-        const binding = envelope.binding;
-        if (!binding || binding.nonce !== config.binding.nonce || binding.clientGeneration !== config.binding.clientGeneration || binding.id !== config.binding.id || binding.revision !== config.binding.revision) return;
+        if (!bound(envelope.binding)) return;
         operation = operation.then(async () => {
           await readiness;
           try {
             if (!ready) throw new Error('Visual is not ready');
             if (!Number.isSafeInteger(envelope.stateRevision) || envelope.stateRevision < 1) throw new Error('Invalid stored state revision');
-            if (envelope.stateRevision < stateRevision) return;
-            restoring = true;
-            if (registration) await registration.restore(structuredClone(envelope.snapshot));
-            else if (envelope.snapshot.state !== null || envelope.snapshot.selection !== null) throw new Error('Static document cannot restore nonempty state');
-            stateRevision = envelope.stateRevision;
+            if (!envelope.snapshot || typeof envelope.snapshot !== 'object' || !Object.hasOwn(envelope.snapshot,'state') || !Object.hasOwn(envelope.snapshot,'selection')) throw new Error('Invalid stored state');
+            await accept(envelope.stateRevision, envelope.snapshot);
           } catch(error) { fail(null,error); }
           finally { restoring = false; }
         });
         return;
       }
+      if (envelope.type === 'paseo-visual-ack') {
+        if (!bound(envelope.binding)) return;
+        operation = operation.then(async () => {
+          await readiness;
+          try {
+            if (!ready) throw new Error('Visual is not ready');
+            if (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 1) throw new Error('Invalid publication acknowledgement');
+            const stored = envelope.stateRevision;
+            if (stored !== null && (!Number.isSafeInteger(stored) || stored < 1)) throw new Error('Invalid acknowledged state revision');
+            acknowledge(envelope.sequence, stored);
+          } catch(error) { fail(null,error); }
+        });
+        return;
+      }
       if (envelope.type !== 'paseo-visual-command') return;
       const command = envelope.command;
-      if (!command || !command.binding || command.binding.nonce !== config.binding.nonce || command.binding.clientGeneration !== config.binding.clientGeneration || command.binding.id !== config.binding.id || command.binding.revision !== config.binding.revision) return;
+      if (!command || !bound(command.binding)) return;
       if (typeof command.commandId !== 'string' || seen.has(command.commandId)) return;
       if (seen.size >= 4096) { fail(command.commandId,new Error('Document command limit reached; reopen the visual')); return; }
       seen.add(command.commandId);
