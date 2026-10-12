@@ -192,6 +192,18 @@ async function metadata(cwd: string, task: Task): Promise<unknown> {
     await readFile(path.join(cwd, task.outputPath.replace(/\.output$/, ".json")), "utf8"),
   );
 }
+type OutcomeSnapshot = { exists: false } | { exists: true; text: string; modified: bigint };
+async function outcomeSnapshot(file: string): Promise<OutcomeSnapshot> {
+  try {
+    const text = await readFile(file, "utf8");
+    const modified = (await stat(file, { bigint: true })).mtimeNs;
+    return { exists: true, text, modified };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return { exists: false };
+    throw error;
+  }
+}
 const status = z.object({ status: z.string(), pid: z.number().optional() });
 
 for (const size of [
@@ -464,6 +476,7 @@ test("inspection and Stop remain available during a parent turn without aborting
     expect(idle.status, JSON.stringify(idle)).toBe("idle");
     const task = (await tasks(bgHome, cwd))[0];
     if (!task) throw new Error("Missing real background task");
+    await expect(page.getByTestId("bg-jobs-trigger")).toBeVisible();
     await page.getByTestId("bg-jobs-trigger").click();
     await page.getByTestId(`bg-job-${task.id}`).click();
     await expect(page.getByTestId("bg-job-logs")).toContainText("busy-output");
@@ -544,11 +557,9 @@ test("verified delegate results are readable without model calls or file writes 
       .object({ delegate: z.object({ artifactDirAbs: z.string() }) })
       .parse(await metadata(cwd, task));
     const outcome = path.join(facts.delegate.artifactDirAbs, "outcome.json");
-    const before = {
-      text: await readFile(outcome, "utf8"),
-      modified: (await stat(outcome, { bigint: true })).mtimeNs,
-    };
+    const before = await outcomeSnapshot(outcome);
     const prompts = await requestCount(bgHome);
+    await expect(page.getByTestId("bg-jobs-trigger")).toBeVisible();
     await page.getByTestId("bg-jobs-trigger").click();
     await page.getByTestId(`bg-job-${task.id}`).click();
     await expect(page.getByTestId("bg-job-detail")).toContainText(/delegate/i);
@@ -557,8 +568,7 @@ test("verified delegate results are readable without model calls or file writes 
     await expect(page.getByTestId("bg-job-result")).toHaveText(
       "DELEGATE VERIFIED ANSWER: UI result sentinel",
     );
-    expect(await readFile(outcome, "utf8")).toBe(before.text);
-    expect((await stat(outcome, { bigint: true })).mtimeNs).toBe(before.modified);
+    expect(await outcomeSnapshot(outcome)).toEqual(before);
     expect(await requestCount(bgHome)).toBe(prompts);
     await writeFile(path.join(facts.delegate.artifactDirAbs, "result.json"), "{}");
     await page.reload();
@@ -569,7 +579,7 @@ test("verified delegate results are readable without model calls or file writes 
     await expect(page.getByTestId("bg-job-error")).toContainText(/verif|integrity|result/i);
     await expect(page.getByTestId("bg-job-result")).not.toBeVisible();
     expect(await requestCount(bgHome)).toBe(prompts);
-    expect((await stat(outcome, { bigint: true })).mtimeNs).toBe(before.modified);
+    expect(await outcomeSnapshot(outcome)).toEqual(before);
   } finally {
     await e2eWorkerClient.removeProject(workspace.projectId);
     await rm(cwd, { recursive: true, force: true });
