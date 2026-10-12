@@ -2529,41 +2529,47 @@ export class DaemonClient {
     signal?: AbortSignal,
     platform?: VisualPlatform,
   ): OwnedSubscription<PiWorkspaceSnapshot> {
-    let membershipRequested = false;
+    let resetSource = false;
     return this.owned.observe(
       async (accept) => {
-        membershipRequested = false;
+        resetSource = false;
         const features = this.lastServerInfoMessage?.features;
         if (features?.piWorkspace !== true || features.ownedSubscriptions !== true) {
           throw new Error("Update the Paseo host to use Pi visual workspaces");
         }
-        membershipRequested = true;
         const requestId = this.createRequestId();
-        return this.sendRequest({
-          requestId,
-          message: {
-            type: "pi_workspace.observe.request",
+        try {
+          return await this.sendRequest({
             requestId,
-            agentId,
-            ...(platform === undefined ? {} : { platform }),
-          },
-          options: { skipQueue: true },
-          select: (message) => {
-            if (
-              message.type !== "pi_workspace.observe.response" ||
-              message.payload.requestId !== requestId
-            )
-              return null;
-            accept(message.payload);
-            return message.payload;
-          },
-        });
+            message: {
+              type: "pi_workspace.observe.request",
+              requestId,
+              agentId,
+              ...(platform === undefined ? {} : { platform }),
+            },
+            options: { skipQueue: true },
+            select: (message) => {
+              if (
+                message.type !== "pi_workspace.observe.response" ||
+                message.payload.requestId !== requestId
+              )
+                return null;
+              accept(message.payload);
+              return message.payload;
+            },
+          });
+        } catch (error) {
+          resetSource = !(error instanceof DaemonRpcError) && this.isConnected;
+          throw error;
+        }
       },
       signal,
       () => {
-        // A capability refusal allocated no server membership and must not reconnect-loop an older host.
-        if (membershipRequested)
-          this.disposeTransport(1011, "Pi visual subscription bootstrap failed");
+        // Reject and release the failed handle before revoking an unknown outcome, avoiding replay.
+        if (resetSource) {
+          this.disposeTransport(1000, "Pi visual subscription bootstrap failed");
+          this.scheduleReconnect({ reason: "Pi visual subscription bootstrap failed" });
+        }
       },
     );
   }
