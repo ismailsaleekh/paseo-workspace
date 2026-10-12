@@ -15,6 +15,8 @@ import {
   type SubagentRow,
 } from "@/subagents";
 import { SubagentsTrack } from "@/subagents/track";
+import { BackgroundJobsTrack } from "@/background-jobs/track";
+import type { BackgroundJobsHandle } from "@/background-jobs/use-background-jobs";
 import type { TodoEntry } from "@/types/stream";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -38,6 +40,7 @@ export const AgentTracks = memo(function AgentTracks({
   archiveFinishedStatus,
   onArchiveFinished,
   hasPluginComposerPills,
+  backgroundJobs,
 }: {
   serverId: string;
   workspaceId: string;
@@ -48,6 +51,8 @@ export const AgentTracks = memo(function AgentTracks({
   archiveFinishedStatus: ArchiveFinishedStatus;
   onArchiveFinished: () => void;
   hasPluginComposerPills: boolean;
+  /** The pane's background jobs observation; null for agents without the feature. */
+  backgroundJobs?: BackgroundJobsHandle | null;
 }): ReactElement | null {
   const { tabId, openTab } = usePaneContext();
   const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
@@ -119,6 +124,7 @@ export const AgentTracks = memo(function AgentTracks({
       tasks,
       archiveFinishedStatus,
       hasPluginComposerPills,
+      hasBackgroundJobs: backgroundJobs?.visible === true,
     })
   ) {
     return null;
@@ -127,6 +133,7 @@ export const AgentTracks = memo(function AgentTracks({
   return (
     <ComposerTrackBar>
       <AgentTaskList tasks={tasks} />
+      {backgroundJobs ? <BackgroundJobsTrack handle={backgroundJobs} /> : null}
       <SubagentsTrack
         serverId={serverId}
         rows={subagentRows}
@@ -157,16 +164,19 @@ export function hasAgentTracks({
   tasks,
   archiveFinishedStatus,
   hasPluginComposerPills = false,
+  hasBackgroundJobs = false,
 }: {
   subagentRows: readonly SubagentRow[];
   tasks: readonly TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;
   hasPluginComposerPills?: boolean;
+  hasBackgroundJobs?: boolean;
 }): boolean {
   return (
     subagentRows.length > 0 ||
     Boolean(tasks?.length) ||
     archiveFinishedStatus.kind !== "idle" ||
-    hasPluginComposerPills
+    hasPluginComposerPills ||
+    hasBackgroundJobs
   );
 }

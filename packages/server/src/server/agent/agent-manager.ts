@@ -318,6 +318,9 @@ export interface CreateAgentOptions {
 
 export interface AgentManagerOptions {
   piWorkspace?: (agentId: string) => ReturnType<NonNullable<AgentLaunchContext["piWorkspace"]>>;
+  piBackgroundJobs?: (
+    agentId: string,
+  ) => ReturnType<NonNullable<AgentLaunchContext["piBackgroundJobs"]>>;
   pluginLifecycle?: PluginLifecycle;
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
@@ -719,6 +722,7 @@ function detachedAgentLabelPatch(labels: Record<string, string>): AgentLabelPatc
 
 export class AgentManager {
   private readonly piWorkspace: AgentManagerOptions["piWorkspace"];
+  private readonly piBackgroundJobs: AgentManagerOptions["piBackgroundJobs"];
   private readonly pluginLifecycle: PluginLifecycle | undefined;
   private readonly clients = new Map<AgentProvider, AgentClient>();
   private readonly providerEnabled = new Map<AgentProvider, boolean>();
@@ -761,6 +765,7 @@ export class AgentManager {
 
   constructor(options: AgentManagerOptions) {
     this.piWorkspace = options.piWorkspace;
+    this.piBackgroundJobs = options.piBackgroundJobs;
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
@@ -5249,6 +5254,10 @@ export class AgentManager {
     const issueVisualLease = this.piWorkspace;
     if (client.provider === "pi" && opening?.purpose !== "history" && issueVisualLease) {
       context.piWorkspace = () => issueVisualLease(agentId);
+    }
+    const issueBackgroundJobsLease = this.piBackgroundJobs;
+    if (client.provider === "pi" && opening?.purpose !== "history" && issueBackgroundJobsLease) {
+      context.piBackgroundJobs = () => issueBackgroundJobsLease(agentId);
     }
     return context;
   }

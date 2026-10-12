@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import type { VisualService } from "./pi-workspace/service.js";
+import type { PiBackgroundJobsHub } from "./pi-background-jobs/hub.js";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
 import { MessageReceipts } from "./message-receipts/index.js";
@@ -525,6 +526,7 @@ function requireWebSocketServices(params: {
  */
 export class VoiceAssistantWebSocketServer {
   private readonly piWorkspace: VisualService | undefined;
+  private readonly piBackgroundJobs: PiBackgroundJobsHub | undefined;
   private readonly logger: pino.Logger;
   private readonly wss: WebSocketServer;
   private readonly pendingConnections: Map<WebSocketLike, PendingConnection> = new Map();
@@ -663,8 +665,10 @@ export class VoiceAssistantWebSocketServer {
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
     piWorkspace?: VisualService,
+    piBackgroundJobs?: PiBackgroundJobsHub,
   ) {
     this.piWorkspace = piWorkspace;
+    this.piBackgroundJobs = piBackgroundJobs;
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
@@ -1496,6 +1500,7 @@ export class VoiceAssistantWebSocketServer {
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
       piWorkspace: this.piWorkspace,
+      piBackgroundJobs: this.piBackgroundJobs,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1792,6 +1797,7 @@ export class VoiceAssistantWebSocketServer {
       ...(this.serverCapabilities ? { capabilities: this.serverCapabilities } : {}),
       features: {
         ...(this.piWorkspace ? { piWorkspace: true } : {}),
+        ...(this.piBackgroundJobs ? { piBackgroundJobs: true } : {}),
         ownedSubscriptions: true,
         agentRequestReceipts: true,
         workspaceRequestReceipts: true,

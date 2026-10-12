@@ -1,4 +1,11 @@
-import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import {
@@ -57,6 +64,12 @@ export interface ComposerTrackPillProps {
   /** Sheet header on compact. Popovers never show one. */
   panelTitle: string;
   testID: string;
+  /** Defaults to `${testID}-panel`. */
+  panelTestID?: string;
+  /** False when the panel body already owns a bounded scrolling viewport. */
+  panelScrollable?: boolean;
+  /** Notified when the panel opens or closes, so a tracker only loads detail while it is shown. */
+  onOpenChange?: (open: boolean) => void;
   /** Spell out anything the segments abbreviate — a bare count reads as nothing out loud. */
   accessibilityLabel?: string;
   /** Panel body. Rendered into a popover on wide screens and a sheet on compact ones. */
@@ -83,6 +96,9 @@ export function ComposerTrackPill({
   segments,
   panelTitle,
   testID,
+  panelTestID,
+  panelScrollable = true,
+  onOpenChange,
   accessibilityLabel,
   children,
 }: ComposerTrackPillProps): ReactElement {
@@ -92,6 +108,7 @@ export function ComposerTrackPill({
         segments={segments}
         testID={testID}
         accessibilityLabel={accessibilityLabel ?? segments.map((segment) => segment.text).join(" ")}
+        onOpenChange={onOpenChange}
       />
       <MenuSurface
         side="top"
@@ -101,8 +118,8 @@ export function ComposerTrackPill({
         minWidth={PANEL_MIN_WIDTH}
         maxWidth={PANEL_MAX_WIDTH}
         maxHeight={PANEL_MAX_HEIGHT}
-        scrollable
-        testID={`${testID}-panel`}
+        scrollable={panelScrollable}
+        testID={panelTestID ?? `${testID}-panel`}
       >
         {children}
       </MenuSurface>
@@ -114,12 +131,17 @@ function ComposerTrackPillTrigger({
   segments,
   testID,
   accessibilityLabel,
+  onOpenChange,
 }: {
   segments: readonly ComposerTrackPillSegment[];
   testID: string;
   accessibilityLabel: string;
+  onOpenChange?: (open: boolean) => void;
 }): ReactElement {
   const { open } = useMenuContext("ComposerTrackPill");
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [onOpenChange, open]);
   const accessibilityState = useMemo(() => ({ expanded: open }), [open]);
   // React Native Web does not map `accessibilityState.expanded` to `aria-expanded`, so the web
   // attribute is set by hand — the same workaround header toggles use.

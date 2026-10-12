@@ -1,5 +1,10 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
 import { VisualSession } from "./session/pi-workspace/session.js";
+import {
+  BACKGROUND_JOBS_FAMILY,
+  BackgroundJobsSession,
+} from "./session/pi-background-jobs/session.js";
+import type { PiBackgroundJobsHub } from "./pi-background-jobs/hub.js";
 import type { ClientPresenceState } from "./agent-attention-policy.js";
 import { VisualFailure } from "@getpaseo/protocol/pi-workspace/contracts";
 import type { VisualService } from "./pi-workspace/service.js";
@@ -463,6 +468,7 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
   piWorkspace?: VisualService;
+  piBackgroundJobs?: PiBackgroundJobsHub;
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
@@ -667,6 +673,7 @@ interface ClientActivity {
 
 export class Session {
   private readonly piWorkspace: VisualSession;
+  private readonly piBackgroundJobs: BackgroundJobsSession;
   readonly delivery = new SessionDelivery(
     (source, message) => {
       if (!this.authorization.allowsOutbound(message)) return;
@@ -899,6 +906,11 @@ export class Session {
       },
       reply: (message) => this.emit(message),
       presence: (source) => this.clientPresence(source),
+    });
+    this.piBackgroundJobs = new BackgroundJobsSession({
+      hub: options.piBackgroundJobs,
+      delivery: this.delivery,
+      reply: (message) => this.emit(message),
     });
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry;
@@ -2187,6 +2199,13 @@ export class Session {
 
   public setPermissions(permissions: readonly DaemonPermission[]): void {
     this.authorization.replacePermissions(permissions);
+    if (!this.authorization.allowsPermission("workspace.read")) {
+      void this.delivery
+        .releaseFamily(BACKGROUND_JOBS_FAMILY)
+        .catch((error) =>
+          this.sessionLogger.error({ err: error }, "Failed to release revoked background jobs"),
+        );
+    }
     if (!this.authorization.allowsPermission("workspace.write")) {
       void this.delivery
         .releaseFamily("pi-workspace")
@@ -2301,7 +2320,7 @@ export class Session {
         return undefined;
       });
     }
-    return this.piWorkspace.handle(msg);
+    return this.piWorkspace.handle(msg) ?? this.piBackgroundJobs.handle(msg);
   }
 
   private async dispatchInboundMessage(msg: SessionInboundMessage, source?: object): Promise<void> {

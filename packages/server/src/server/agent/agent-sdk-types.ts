@@ -8,6 +8,7 @@ import type {
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
 import type { VisualRuntimeLease } from "../pi-workspace/attachment.js";
+import type { PiBackgroundJobsLease } from "../pi-background-jobs/attachment.js";
 
 export type { AgentProviderNotice, AgentTaskItem };
 
@@ -629,6 +630,11 @@ export interface AgentSessionConfig {
 export interface AgentLaunchContext {
   /** Runtime-only capability issuer; never part of persisted agent configuration. */
   piWorkspace?: () => VisualRuntimeLease;
+  /**
+   * Runtime-only native background-jobs capability issuer for interactive Pi launches. Undefined
+   * on hosts that cannot serve the private bridge; ordinary Pi launches are unaffected.
+   */
+  piBackgroundJobs?: () => PiBackgroundJobsLease | undefined;
   agentId?: string;
   env?: Record<string, string>;
   /**

@@ -569,6 +569,37 @@ export interface FileUploadInput {
 }
 export type FileUploadResult = FileUploadResponse["payload"];
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
+export type BackgroundJobsObservePayload = Extract<
+  SessionOutboundMessage,
+  { type: "agent.background_jobs.observe.response" }
+>["payload"];
+type BackgroundJobsResponsePayload<T extends SessionOutboundMessage["type"]> =
+  Extract<SessionOutboundMessage, { type: T }> extends { payload: infer P } ? P : never;
+export type BackgroundJobsListPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.list.response">;
+export type BackgroundJobDetailPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.detail.response">;
+export type BackgroundJobLogsPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.logs.response">;
+export type BackgroundJobResultPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.result.response">;
+export type BackgroundJobStopPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.stop.response">;
+export type BackgroundJobRerunPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.rerun.response">;
+export type BackgroundJobsStopAllPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.stop_all.response">;
+export type BackgroundJobsMarkSeenPayload =
+  BackgroundJobsResponsePayload<"agent.background_jobs.mark_seen.response">;
+export interface BackgroundJobsReadAddress {
+  agentId: string;
+  runtimeId: string;
+  activationId: string;
+}
+export interface BackgroundJobsControlAddress extends BackgroundJobsReadAddress {
+  subscriptionId: string;
+  sequence: number;
+}
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
 type ListProviderModesPayload = ListProviderModesResponseMessage["payload"];
@@ -2543,6 +2574,105 @@ export class DaemonClient {
   ): Promise<PiWorkspaceReceiptAck> {
     return this.sendNamespacedCorrelatedSessionRequest<"pi_workspace.receipt.response">({
       message: { type: "pi_workspace.receipt.request", agentId, receipt },
+    });
+  }
+
+  /**
+   * Source-owned observation of one agent's native background jobs. The host must advertise
+   * `piBackgroundJobs`; an older host fails this observation instead of an empty list.
+   */
+  observeBackgroundJobs(
+    agentId: string,
+    signal?: AbortSignal,
+  ): OwnedSubscription<BackgroundJobsObservePayload> {
+    return this.owned.observe(async (accept) => {
+      const features = this.lastServerInfoMessage?.features;
+      if (features?.piBackgroundJobs !== true || features.ownedSubscriptions !== true) {
+        throw new Error("Update the Paseo host to use background jobs");
+      }
+      const requestId = this.createRequestId();
+      return this.sendRequest({
+        requestId,
+        message: { type: "agent.background_jobs.observe.request", requestId, agentId },
+        options: { skipQueue: true },
+        select: (message) => {
+          if (
+            message.type !== "agent.background_jobs.observe.response" ||
+            message.payload.requestId !== requestId
+          )
+            return null;
+          accept(message.payload);
+          return message.payload;
+        },
+      });
+    }, signal);
+  }
+
+  listBackgroundJobs(
+    input: BackgroundJobsReadAddress & { cursor?: string; limit?: number },
+  ): Promise<BackgroundJobsListPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.list.response">({
+      message: { type: "agent.background_jobs.list.request", ...input },
+    });
+  }
+
+  getBackgroundJob(
+    input: BackgroundJobsReadAddress & { taskId: string },
+  ): Promise<BackgroundJobDetailPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.detail.response">({
+      message: { type: "agent.background_jobs.detail.request", ...input },
+    });
+  }
+
+  readBackgroundJobLogs(
+    input: BackgroundJobsReadAddress & { taskId: string; maxBytes?: number; tail?: boolean },
+  ): Promise<BackgroundJobLogsPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.logs.response">({
+      message: { type: "agent.background_jobs.logs.request", ...input },
+    });
+  }
+
+  readBackgroundJobResult(
+    input: BackgroundJobsReadAddress & { taskId: string },
+  ): Promise<BackgroundJobResultPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.result.response">({
+      message: { type: "agent.background_jobs.result.request", ...input },
+    });
+  }
+
+  /**
+   * Controls carry one caller-owned sequence per deliberate action. A lost response is never
+   * retried here: the caller reports an unknown outcome and refreshes.
+   */
+  stopBackgroundJob(
+    input: BackgroundJobsControlAddress & { taskId: string },
+  ): Promise<BackgroundJobStopPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.stop.response">({
+      message: { type: "agent.background_jobs.stop.request", ...input },
+    });
+  }
+
+  rerunBackgroundJob(
+    input: BackgroundJobsControlAddress & { taskId: string },
+  ): Promise<BackgroundJobRerunPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.rerun.response">({
+      message: { type: "agent.background_jobs.rerun.request", ...input },
+    });
+  }
+
+  stopAllBackgroundJobs(
+    input: BackgroundJobsControlAddress & { taskIds: string[] },
+  ): Promise<BackgroundJobsStopAllPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.stop_all.response">({
+      message: { type: "agent.background_jobs.stop_all.request", ...input },
+    });
+  }
+
+  markBackgroundJobsSeen(
+    input: BackgroundJobsControlAddress & { taskIds: string[] },
+  ): Promise<BackgroundJobsMarkSeenPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.background_jobs.mark_seen.response">({
+      message: { type: "agent.background_jobs.mark_seen.request", ...input },
     });
   }
 

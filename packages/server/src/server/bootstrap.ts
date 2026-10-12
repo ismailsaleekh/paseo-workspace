@@ -2,6 +2,8 @@ import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import { VisualStorage } from "./pi-workspace/storage.js";
 import { VisualService } from "./pi-workspace/service.js";
 import { VisualAttachmentBridge } from "./pi-workspace/attachment.js";
+import { PiBackgroundJobsHub } from "./pi-background-jobs/hub.js";
+import type { BackgroundJobsAgentAvailability } from "./pi-background-jobs/hub.js";
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
 import { constants, existsSync, unlinkSync } from "fs";
@@ -936,8 +938,20 @@ export async function createPaseoDaemon(
     reportFailure: (error) => logger.error({ err: error }, "Pi visual attachment failed"),
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
-  const agentManager = new AgentManager({
+  // The hub never starts agents; it only reads whether an agent is a live Pi agent.
+  const piBackgroundJobs: PiBackgroundJobsHub = new PiBackgroundJobsHub({
+    paseoHome: config.paseoHome,
+    logger,
+    describeAgent: (agentId): BackgroundJobsAgentAvailability => {
+      const agent = agentManager.getAgent(agentId);
+      if (!agent || agent.internal) return { kind: "unknown" };
+      if (agent.provider !== "pi") return { kind: "unsupported_provider" };
+      return agent.lifecycle === "closed" ? { kind: "not_running" } : { kind: "pi" };
+    },
+  });
+  const agentManager: AgentManager = new AgentManager({
     piWorkspace: (agentId) => visualAttachment.issue(agentId),
+    piBackgroundJobs: (agentId) => piBackgroundJobs.issue(agentId),
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
@@ -1595,6 +1609,7 @@ export async function createPaseoDaemon(
     let mainStarted = false;
     try {
       await visualAttachment.start();
+      await piBackgroundJobs.start();
       localCredential = await writeLocalCredential(config.paseoHome);
       if (serviceProxyListenTarget) {
         const boundServiceProxyTarget = await serviceProxy.startStandalone({
@@ -1741,6 +1756,7 @@ export async function createPaseoDaemon(
               orchestrationSkills,
               workspaceLabelService,
               piWorkspace,
+              piBackgroundJobs,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -1789,6 +1805,7 @@ export async function createPaseoDaemon(
     } catch (error) {
       piWorkspace.close();
       await visualAttachment.stop();
+      await piBackgroundJobs.stop();
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
@@ -1819,6 +1836,7 @@ export async function createPaseoDaemon(
     agentManager.prepareForShutdown();
     piWorkspace.close();
     await visualAttachment.stop();
+    await piBackgroundJobs.stop();
     await closeAllAgents(logger, agentManager);
     await agentManager.flushForShutdown().catch(() => undefined);
     detachAgentStoragePersistence();
