@@ -1,6 +1,9 @@
 import { z } from "zod";
 import {
   VisualActionsSchema,
+  VisualIdSchema,
+  VisualLibraryPageSchema,
+  VisualVersionsPageSchema,
   VisualBindingSchema,
   VisualDocumentSchema,
   VisualErrorSchema,
@@ -14,7 +17,12 @@ import {
   assertVisualJsonBound,
   parseVisualSnapshot,
 } from "./contracts.js";
-import { SpeechEventSchema, SpeechReceiptSchema } from "./speech.js";
+import {
+  SpeechDeviceSchema,
+  SpeechEventSchema,
+  SpeechReceiptSchema,
+  SpeechVoiceSchema,
+} from "./speech.js";
 
 export const VisualRenderDocumentSchema = z
   .object({
@@ -27,6 +35,8 @@ export const VisualViewSchema = z
     generation: z.string().uuid(),
     sequence: z.number().int().nonnegative(),
     current: VisualRenderDocumentSchema.nullable(),
+    sessionId: z.string().min(1).max(256).nullable().optional(),
+    selectionIntent: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
 export const VisualCommandSchema = z.discriminatedUnion("kind", [
@@ -156,6 +166,7 @@ export const VisualSubscribeRequestSchema = z.object({
   requestId: z.string(),
   agentId: z.string().min(1).max(256),
   platform: VisualPlatformSchema.optional(),
+  library: z.boolean().optional(),
 });
 export const VisualSubscribeResponseSchema = z.object({
   type: z.literal("pi_workspace.observe.response"),
@@ -190,6 +201,79 @@ export const VisualReceiptResponseSchema = z.object({
 });
 // For speech receipts `stateRevision` acknowledges the observation's speech receipt sequence.
 
+// App-level agent speech: one subscription per app connection plays the speech of every
+// conversation, whatever the app displays. Playback reports use `pi_workspace.receipt.request`.
+export const SpeechObserveRequestSchema = z.object({
+  type: z.literal("pi_workspace.speech.observe.request"),
+  requestId: z.string(),
+  device: SpeechDeviceSchema,
+  /** The app keeps playing speech while it is in the background. */
+  background: z.boolean().optional(),
+});
+export const SpeechObserveResponseSchema = z.object({
+  type: z.literal("pi_workspace.speech.observe.response"),
+  payload: z.object({
+    requestId: z.string(),
+    subscriptionId: z.string(),
+    generation: z.string().uuid(),
+  }),
+});
+export const SpeechUpdateMessageSchema = z.object({
+  type: z.literal("pi_workspace.speech.update"),
+  payload: z.object({
+    subscriptionId: z.string(),
+    agentId: z.string(),
+    voice: SpeechVoiceSchema,
+    speech: SpeechEventSchema,
+  }),
+});
+export type SpeechObserveRequest = z.infer<typeof SpeechObserveRequestSchema>;
+export type SpeechObserveResponse = z.infer<typeof SpeechObserveResponseSchema>["payload"];
+export type SpeechUpdateMessage = z.infer<typeof SpeechUpdateMessageSchema>;
+
+export const VisualLibraryOperationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("list"), cursor: VisualIdSchema.optional() }),
+  z.object({
+    kind: z.literal("versions"),
+    id: VisualIdSchema,
+    cursor: VisualRevisionSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal("select"),
+    id: VisualIdSchema,
+    revision: VisualRevisionSchema.nullable(),
+    intent: VisualRevisionSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal("visibility"),
+    visible: z.boolean(),
+    intent: VisualRevisionSchema.optional(),
+  }),
+]);
+export const VisualLibraryRequestSchema = z.object({
+  type: z.literal("pi_workspace.library.request"),
+  requestId: z.string(),
+  agentId: z.string().min(1).max(256),
+  clientGeneration: z.string().uuid(),
+  operation: VisualLibraryOperationSchema,
+});
+export const VisualLibraryResultSchema = z.discriminatedUnion("kind", [
+  VisualLibraryPageSchema.extend({ kind: z.literal("list") }),
+  VisualVersionsPageSchema.extend({ kind: z.literal("versions") }),
+  z.object({ kind: z.literal("view"), view: VisualWireViewSchema }),
+]);
+export const VisualLibraryResponseSchema = z.object({
+  type: z.literal("pi_workspace.library.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    result: VisualLibraryResultSchema,
+  }),
+});
+export type VisualLibraryOperation = z.infer<typeof VisualLibraryOperationSchema>;
+export type VisualLibraryRequest = z.infer<typeof VisualLibraryRequestSchema>;
+export type VisualLibraryResult = z.infer<typeof VisualLibraryResultSchema>;
+
 export const DesktopVisualBoundsSchema = z
   .object({
     x: z.number().int().min(-131072).max(131072),
@@ -203,11 +287,14 @@ export const DesktopVisualMountSchema = z
     current: VisualRenderDocumentSchema,
     commandId: z.string().uuid().nullable(),
     bounds: DesktopVisualBoundsSchema,
+    occluded: z.boolean().optional(),
   })
   .strict();
 export const DesktopVisualAddressSchema = z.object({ nonce: z.string().uuid() }).strict();
 export const DesktopVisualBoundsUpdateSchema = DesktopVisualAddressSchema.extend({
   bounds: DesktopVisualBoundsSchema,
+  /** Owning app renderer's central overlay registry; generated guests cannot invoke it. */
+  occluded: z.boolean().optional(),
 });
 export const DesktopVisualCommandSchema = DesktopVisualAddressSchema.extend({
   command: VisualCommandSchema,

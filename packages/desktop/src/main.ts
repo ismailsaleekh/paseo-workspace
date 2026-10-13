@@ -122,8 +122,11 @@ const DESKTOP_WINDOW_CHROME_MODE = resolveDesktopWindowChromeMode({
 const UPDATE_QUIT_DEADLINE_MS = 5_000;
 const pendingBrowserWindowOpenRequests = new PendingBrowserWindowOpenRequests();
 const agentNavigationInbox = new AgentNavigationInbox();
+const browserKeyboard = new BrowserKeyboard(getPaseoBrowserWebviewRegistry());
+browserKeyboard.registerIpc();
 const piWorkspaceVisuals = new PiWorkspaceVisuals({
   ipc: ipcMain,
+  keyboard: browserKeyboard,
   createSession: (partition) => session.fromPartition(partition, { cache: false }),
   createView: (webPreferences) => new WebContentsView({ webPreferences }),
   preloadPath: path.join(__dirname, "features", "pi-workspace-visual-preload.js"),
@@ -192,9 +195,6 @@ function readActiveBrowserInput(
   const browserId = typeof record.browserId === "string" ? record.browserId.trim() : null;
   return { workspaceId: record.workspaceId.trim(), browserId: browserId || null };
 }
-
-const browserKeyboard = new BrowserKeyboard(getPaseoBrowserWebviewRegistry());
-browserKeyboard.registerIpc();
 
 function showBrowserWebviewContextMenu(
   win: BrowserWindow,

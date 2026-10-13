@@ -6,6 +6,8 @@ type OutboundOperation = SessionOutboundMessage["type"];
 export type PermissionRequirement = DaemonPermission | readonly DaemonPermission[] | null;
 
 const INBOUND_PERMISSION = {
+  "pi_workspace.library.request": "workspace.read",
+  "pi_workspace.speech.observe.request": "workspace.write",
   "pi_workspace.observe.request": "workspace.write",
   "pi_workspace.receipt.request": "workspace.write",
   "agent.background_jobs.observe.request": "workspace.read",
@@ -225,6 +227,9 @@ const INBOUND_PERMISSION = {
 } as const satisfies Record<InboundOperation, PermissionRequirement>;
 
 const OUTBOUND_PERMISSION = {
+  "pi_workspace.library.response": "workspace.read",
+  "pi_workspace.speech.observe.response": "workspace.write",
+  "pi_workspace.speech.update": "workspace.write",
   "pi_workspace.observe.response": "workspace.write",
   "pi_workspace.receipt.response": "workspace.write",
   "pi_workspace.update": "workspace.write",

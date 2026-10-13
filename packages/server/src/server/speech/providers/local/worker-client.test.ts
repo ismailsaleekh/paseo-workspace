@@ -177,6 +177,18 @@ describe("LocalSpeechWorkerClient", () => {
     expect(Buffer.concat(chunks)).toEqual(Buffer.from([1, 2, 3, 4]));
   });
 
+  it("sends a per-request speaker with the TTS request and leaves the worker config unchanged", async () => {
+    const { client, workers } = createClient();
+    const provider = new WorkerBackedTextToSpeechProvider(client);
+
+    void provider.synthesizeSpeech("Michael here", { speakerId: 6 });
+    const request = workers[0].sent[0];
+    expect(request).toMatchObject({ type: "tts.synthesize", text: "Michael here", speakerId: 6 });
+    expect(request).toMatchObject({ config: { voiceTtsModel: "kokoro-en-v0_19" } });
+    expect(JSON.stringify(request)).not.toContain("voiceTtsSpeakerId");
+    expect(workers).toHaveLength(1);
+  });
+
   it("forwards STT session audio and transcript events through IPC", async () => {
     const { client, workers } = createClient();
     const provider = new WorkerBackedSpeechToTextProvider(client, "voiceStt");

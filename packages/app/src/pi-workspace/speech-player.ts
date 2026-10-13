@@ -1,13 +1,28 @@
 import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
-import { parseSpeechEvent, type SpeechEvent } from "@getpaseo/protocol/pi-workspace/speech";
-import type { SpeechOrigin, SpeechReport, SpeechSink } from "./controller";
+import {
+  parseSpeechEvent,
+  type SpeechClientSignal,
+  type SpeechEvent,
+  type SpeechVoice,
+} from "@getpaseo/protocol/pi-workspace/speech";
 
-export type { SpeechReport } from "./controller";
+/** A playback report for one utterance (everything except the readiness announcement). */
+export type SpeechReport = Exclude<SpeechClientSignal, { type: "ready" }>;
+/** The subscription an utterance arrived on; reports go back through it. */
+export interface SpeechOrigin {
+  report(report: SpeechReport): void;
+}
+/** Plays agent speech delivered for one or more origins. */
+export interface SpeechSink {
+  accept(event: SpeechEvent, origin: SpeechOrigin, voice?: SpeechVoice | null): void;
+  /** The origin ended or was replaced: stop its playback without reporting. */
+  reset(origin: SpeechOrigin): void;
+}
 export interface SpeechPlayerState {
   /** The utterance currently playing; the stop control is shown while this is set. */
   utterance: string | null;
-  /** The panel that shows the stop control: the most recently mounted holder of the player. */
-  holder: object | null;
+  /** The named voice of the playing utterance, when the host reported one. */
+  voice: SpeechVoice | null;
 }
 export interface SpeechPlayerOptions {
   /** Created lazily on the first audio so an idle app holds no audio session or player. */
@@ -44,6 +59,7 @@ function scheduleTimer(run: () => void, milliseconds: number): () => void {
 interface Utterance {
   id: string;
   origin: SpeechOrigin;
+  voice: SpeechVoice | null;
   received: number;
   played: number;
   playedMs: number;
@@ -75,8 +91,7 @@ export class SpeechPlayer implements SpeechSink {
   private engine: AudioEngine | null = null;
   private current: Utterance | null = null;
   private readonly ended: string[] = [];
-  private readonly holders: object[] = [];
-  private state: SpeechPlayerState = { utterance: null, holder: null };
+  private state: SpeechPlayerState = { utterance: null, voice: null };
   private readonly listeners = new Set<() => void>();
   private cancelDrain: (() => void) | null = null;
 
@@ -90,7 +105,7 @@ export class SpeechPlayer implements SpeechSink {
     };
   };
 
-  accept(event: SpeechEvent, origin: SpeechOrigin): void {
+  accept(event: SpeechEvent, origin: SpeechOrigin, voice: SpeechVoice | null = null): void {
     const playback = parseSpeechEvent(event);
     if (!playback) throw new Error("Malformed speech event");
     if (this.ended.includes(playback.utterance)) return;
@@ -102,6 +117,7 @@ export class SpeechPlayer implements SpeechSink {
           entry = {
             id: playback.utterance,
             origin,
+            voice,
             received: 0,
             played: 0,
             playedMs: 0,
@@ -146,28 +162,6 @@ export class SpeechPlayer implements SpeechSink {
         return;
       }
     }
-  }
-
-  /**
-   * Registers a mounted panel of this conversation. The latest holder shows the stop control;
-   * when the last holder leaves, playback stops and the audio engine is released.
-   */
-  hold(): { holder: object; release(): void } {
-    const holder = {};
-    this.holders.push(holder);
-    this.publish();
-    let held = true;
-    return {
-      holder,
-      release: () => {
-        if (!held) return;
-        held = false;
-        const index = this.holders.indexOf(holder);
-        if (index !== -1) this.holders.splice(index, 1);
-        if (this.holders.length === 0) this.dispose();
-        this.publish();
-      },
-    };
   }
 
   /** The user's stop control: silent at once, reported as stopped. */
@@ -316,34 +310,8 @@ export class SpeechPlayer implements SpeechSink {
   private publish(): void {
     this.state = {
       utterance: this.current?.id ?? null,
-      holder: this.holders.at(-1) ?? null,
+      voice: this.current?.voice ?? null,
     };
     for (const listener of this.listeners) listener();
   }
-}
-
-const sharedPlayers = new WeakMap<object, Map<string, SpeechPlayer>>();
-
-/**
- * One player per app connection and agent. An app may keep several panels of one conversation
- * mounted (for example a stacked screen below the visible one); the daemon may route an
- * utterance to any of their observations, so they share the player and the most recently
- * mounted panel shows its stop control.
- */
-export function sharedSpeechPlayer(
-  connection: object,
-  agentId: string,
-  options: SpeechPlayerOptions,
-): SpeechPlayer {
-  let players = sharedPlayers.get(connection);
-  if (!players) {
-    players = new Map();
-    sharedPlayers.set(connection, players);
-  }
-  let player = players.get(agentId);
-  if (!player) {
-    player = new SpeechPlayer(options);
-    players.set(agentId, player);
-  }
-  return player;
 }

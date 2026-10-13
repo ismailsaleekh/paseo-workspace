@@ -21,20 +21,32 @@ Loading outside a compatible Paseo host registers the tools without starting a d
 
 Eight direct model-callable tools:
 
-| Tool | Arguments | Responsibility |
-| --- | --- | --- |
-| `visual_present` | `{mode:"new",title,html}` or `{mode:"new",title,file}`; reopen `{mode:"open",id}` | Store/display prepared content or reopen a saved artifact |
-| `visual_update` | `{id,revision,html}` or `{id,revision,file}` | Replace source using its observed revision |
-| `visual_act` | `{id,action,value?}` | Invoke one declared action on the active display |
-| `visual_inspect` | `{id?,screenshot?,client?}` | Inspect the active display, or the exact opaque client returned by an earlier inspection |
-| `visual_list` | `{cursor?}` | List up to 50 saved artifacts in the bound conversation |
-| `speak` | `{text}` | Speak the agent's own words aloud on the one app client showing the conversation |
-| `branch_open` | `{title, purpose?, answer_now?}` | Open a conversation detour in the same Pi session |
-| `branch_return` | `{notes, artifacts?}` | Return from the innermost detour, keeping only the supplied notes |
+| Tool             | Arguments                                                                         | Responsibility                                                                           |
+| ---------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `visual_present` | `{mode:"new",title,html}` or `{mode:"new",title,file}`; reopen `{mode:"open",id}` | Store/display prepared content or reopen a saved artifact                                |
+| `visual_update`  | `{id,revision,html}` or `{id,revision,file}`                                      | Replace source using its observed revision                                               |
+| `visual_act`     | `{id,action,value?}`                                                              | Invoke one declared action on the active display                                         |
+| `visual_inspect` | `{id?,screenshot?,client?}`                                                       | Inspect the active display, or the exact opaque client returned by an earlier inspection |
+| `visual_list`    | `{cursor?}`                                                                       | List up to 50 saved artifacts in the bound conversation                                  |
+| `speak`          | `{text, voice?, device?}`                                                         | Speak the agent's own words aloud on one app, in Michael's (default) or Adam's voice    |
+| `branch_open`    | `{title, purpose?, answer_now?}`                                                  | Open a conversation detour in the same Pi session                                        |
+| `branch_return`  | `{notes, artifacts?}`                                                             | Return from the innermost detour, keeping only the supplied notes                        |
 
 Exactly one source is accepted. A file is one explicitly named regular UTF-8 file, relative to the actual Pi cwd when not absolute. Symlinks and directories are refused. Inline/file sources share a 1 MiB UTF-8 bound, without truncation. Tools never scan directories, build projects, fetch assets, start document servers, run shell commands or invoke models.
 
 Results have matching `details` and `structuredContent`, plus JSON text. Failures set `isError` and include `error.code` and `error.message`; `id` retains a recoverable artifact identity when available. Source and interaction revisions are separate, and previous source/state versions remain recoverable.
+
+## Drawing sidebar and committed library
+
+The chat's Drawings control starts collapsed. Wide layouts reserve a right-hand column; compact layouts show a dedicated drawing destination with Back to chat while retaining the chat and its draft. A newly stored drawing updates the control and list without opening a closed sidebar. Only the selected document mounts a renderer.
+
+The library reads the exact persisted managed-agent/Pi session identity, including after a daemon reopen. Native listing, selection, pagination and version browsing use source-bound `pi_workspace.library` RPCs, not chat prompts or agent resumes. `piVisualLibrary` gates the enhanced observation once; older hosts require an update. Library reads require `workspace.read`; document publications retain `workspace.write`.
+
+Drawing and version lists page in batches of 50 with Load more. Source history follows committed ancestry, excluding abandoned stages. Source replacement requires a visible Latest view to verify restoration; collapsed or historical previews explicitly refuse replacement without moving the head or publishing the stage. New commits archive the prior source's last compatible snapshot. Pre-library ancestors without archived choices are labelled as initial views. Historical interaction stays on that displayed revision, advances a per-display ephemeral state revision for each changed accepted snapshot, and never saves into latest. Stale historical publications and captures are refused; Latest restores the live source and its separate saved choices. Inspection reports the actually displayed historical revision.
+
+Electron's central overlay registration suspends the secure native guest while a menu or modal is registered, including nested overlays. Closing the last overlay restores the same guest, source and choices. Hidden capture fails rather than returning stale pixels. Focused native guest key input reaches the app's existing shortcut resolver only through the main-process keyboard-policy entry point. It uses the same published effective bindings and never gives visuals browser/automation registration. IME, ordinary Enter, unsupported and editing-disabled chords stay inside the guest; synthetic document events have no authority. Generated content receives no host shortcut IPC or privileged app actions.
+
+This candidate is the isolated UR-V1 sidebar/library slice, not whole UR-01–UR-04 delivery. Candidate test presence is not passing evidence. Focused-native-guest Cmd+K/menu operation is a required candidate check, not yet passing evidence. Native keyboard/capture release review, packaged Mac and attended Android/Redmi checks, and the UR-S2 speech/character/orb gates remain mandatory and unwaived before coordinated release.
 
 ## Displays and capture
 
@@ -50,34 +62,38 @@ screenshot: {client, mimeType, width, height, viewport:{width,height}, pixelRati
 
 Image bytes are not duplicated in the text or structured details. Electron captures the displayed guest's viewport through its main-owned CDP connection. Android captures the live document inside the companion visual host: the same WebView is recorded into a `RenderNode` and rendered by `HardwareRenderer` into an `ImageReader` (WebGL included); Paseo's own window capture cannot see the embedded surface and is never used. Neither platform uses a backend render, full-document screenshot or cached image. Operation, connection, document, source/state revision, viewport and lifetime bindings are rechecked after asynchronous capture. PNGs are bounded to 2 MiB and 4096 pixels per dimension. Captures have a frame deadline and bounded concurrency.
 
-| Error | Meaning |
-| --- | --- |
-| `CLIENT_UNAVAILABLE` | No display is available for the conversation, including an unaddressed screenshot request |
-| `DISPLAY_UNAVAILABLE` | The addressed display is unknown, closed, hidden, backgrounded or not showing the artifact |
-| `CAPTURE_UNSUPPORTED` | The existing display cannot supply actual pixels; plain web and the iOS adapter report this |
-| `DOCUMENT_UNRESPONSIVE` | The trusted desktop or Android host terminated the hung document; reopen or replace it to recover |
-| `RENDERER_UNAVAILABLE` | The Android display cannot render visuals: the visual host app is missing, unbindable or differently signed, or the device is below Android 11. Paseo explains this in the surface and never falls back to an in-app WebView |
-| `STALE_STATE` / `STALE_DOCUMENT` | A publication or asynchronous result no longer matches its binding |
+| Error                            | Meaning                                                                                                                                                                                                                      |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLIENT_UNAVAILABLE`             | No display is available for the conversation, including an unaddressed screenshot request                                                                                                                                    |
+| `DISPLAY_UNAVAILABLE`            | The addressed display is unknown, closed, hidden, backgrounded or not showing the artifact                                                                                                                                   |
+| `CAPTURE_UNSUPPORTED`            | The existing display cannot supply actual pixels; plain web and the iOS adapter report this                                                                                                                                  |
+| `DOCUMENT_UNRESPONSIVE`          | The trusted desktop or Android host terminated the hung document; reopen or replace it to recover                                                                                                                            |
+| `RENDERER_UNAVAILABLE`           | The Android display cannot render visuals: the visual host app is missing, unbindable or differently signed, or the device is below Android 11. Paseo explains this in the surface and never falls back to an in-app WebView |
+| `STALE_STATE` / `STALE_DOCUMENT` | A publication or asynchronous result no longer matches its binding                                                                                                                                                           |
 
 Other V1 errors retain their meaning. A terminated document stays represented as unresponsive until reopened/replaced; its stored source/state are retained. The composer belongs to the app, not the generated guest.
 
 ## Agent speech (`speak`)
 
-`speak({text})` takes 1–20,000 characters of non-blank text and passes them unchanged to the daemon's **local** text-to-speech engine (the existing sherpa/Kokoro models). The daemon splits the text at sentence boundaries without rewriting it, synthesizes one sentence at a time and streams each sentence's PCM to the client as soon as it exists, so the first sentence plays while the rest is still being synthesized. No model, second agent or cloud speech service is involved, and realtime voice mode is neither required nor used: agent speech works with it disabled.
+`speak({text, voice?, device?})` takes 1–20,000 characters of non-blank text and passes them unchanged to the daemon's **local** text-to-speech engine (the existing sherpa/Kokoro models). The daemon splits the text at sentence boundaries without rewriting it, synthesizes one sentence at a time and streams each sentence's PCM to the client as soon as it exists, so the first sentence plays while the rest is still being synthesized. No model, second agent or cloud speech service is involved, and realtime voice mode is neither required nor used.
 
-Playback goes to exactly one client: among the visible app displays of this conversation that announced speech playback, the daemon ranks by the connection's `client_heartbeat` presence (focused on this agent, then most recent activity, the same presence notification routing uses), then the latest mount. Activity age only ranks: an idle operator still hears speech. An app that reports itself hidden, such as a backgrounded Android app, does not display the conversation and is never chosen. Utterances of one conversation play in order; speech holds no session input lock, and visual tools, typing and other tools stay responsive (`speak` runs in parallel with other tool calls).
+**Voices.** `voice` is `"michael"` (the default; the user may call him Mike) or `"adam"`, Kokoro English v0.19 speakers `am_michael` (6) and `am_adam` (5). The agent chooses from the user's ordinary words; a name only quoted or mentioned is not a request to speak, and an unknown name is refused, never substituted. The voice applies to that utterance only; the configured default voice is unchanged.
+
+**Where it plays.** Every app connection subscribes once to the host's speech (`pi_workspace.speech.observe`, feature `piSpeech`), so speech plays whichever conversation or screen is shown. Each utterance plays on exactly one app, chosen when its turn starts and kept until it ends: the `device` the user asked for (`"computer"` or `"phone"`), otherwise the app the user last messaged this conversation from, otherwise the best-ranked app by presence. A desktop plays while hidden; an Android app plays while hidden only with **Background on** (a media-playback notification with Stop). An unavailable requested or current device fails with `DEVICE_UNAVAILABLE` and never moves to another device. One voice plays at a time across conversations. Apps older than `piSpeech` keep the previous per-conversation display path.
+
+**Stop.** The orb's Stop (`speech-stop`) or the notification's Stop ends the utterance as `stopped`; further `speak` calls of that conversation fail with `SPEECH_STOPPED` until the user's next message. Stop never aborts the agent, jobs, the draft or the microphone.
 
 The tool resolves only from the client's own playback report:
 
-| Outcome | Result |
-| --- | --- |
-| Finished playing | `{kind:"speech", utterance, status:"completed", client, durationMs}` |
-| The user pressed **Stop speech** | same shape with `status:"stopped"` (not an error) |
-| Failure | `isError:true`, details `{kind:"error", id, utterance, status:"failed", error:{code,message}}` |
+| Outcome                          | Result                                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Finished playing                 | `{kind:"speech", utterance, status:"completed", client, durationMs}`                           |
+| The user pressed **Stop speech** | same shape with `status:"stopped"` (not an error)                                              |
+| Failure                          | `isError:true`, details `{kind:"error", id, utterance, status:"failed", error:{code,message}}` |
 
 Failure codes include `CLIENT_UNAVAILABLE` (no app shows the conversation), `TTS_UNAVAILABLE` (no local engine), `TTS_FAILED`, `CLIENT_DISCONNECTED` (the playing display went away), `SPEECH_TIMEOUT`, `PLAYBACK_FAILED`, `PLAYBACK_DRAIN_TIMEOUT` (the device did not finish playing in time), `CANCELLED` and `HOST_UNAVAILABLE` (no attached Paseo). Enqueueing or delivering audio is never reported as completion.
 
-The app shows a **Stop speech** control (`speech-stop`) while speech plays, on desktop and Android. Stop is local and immediate: queued audio is dropped, the playing chunk is stopped and every later frame of that utterance is ignored; the daemon then stops synthesizing the remaining sentences. Stop never aborts the agent run, never changes the composer draft and never touches the microphone; dictation and playback are independent. On Android the audio engine starts only when speech arrives and releases its player when idle, so no player stays started outside speech.
+The compact voice orb in the workspace header (and in the chat in desktop focus mode) shows who speaks and what the voice is doing — speaking, listening, muted, waiting, offline or ready — as a static phase dot with a text label, never a fake level meter, with **Stop** (`speech-stop`) while speech plays. Stop is local and immediate: queued audio is dropped, the playing chunk is stopped and every later frame of that utterance is ignored; the daemon then stops synthesizing the remaining sentences. Stop never aborts the agent run, never changes the composer draft and never touches the microphone; dictation and playback are independent. On Android the audio engine starts only when speech arrives and releases its player when idle, so no player stays started outside speech.
 
 ## Conversation detours (`branch_open`, `branch_return`)
 
@@ -121,7 +137,10 @@ window.paseoVisual.register({
         required: ["value"],
         additionalProperties: false,
       },
-      run: (input) => { value = input.value; render(); },
+      run: (input) => {
+        value = input.value;
+        render();
+      },
     },
   },
 });
@@ -131,7 +150,7 @@ window.paseoVisual.publish();
 
 Local controls require no model request. Restoration must not publish another local change. Snapshots are limited to 32 KiB, depth 16, and 64 declared actions. Action schemas are local; external schema resolution is not supported. Static documents may have empty state/actions. A replacement that cannot restore saved state fails and retains the previous version.
 
-The next ordinary Pi request receives a separate `<pi-workspace-context>` observation marked as untrusted UI data. User text is unchanged. The envelope excludes full HTML and image bytes.
+Drawing state is never added to agent requests automatically. The agent calls `visual_inspect` when the user refers to a drawing or to what they selected or changed in it; drawing content is data, never instructions.
 
 ## Safety, persistence and scope
 

@@ -5,9 +5,12 @@ import {
   type SpeechClientSignal,
   type SpeechPlayback,
   type SpeechResult,
+  type SpeechVoice,
 } from "@getpaseo/protocol/pi-workspace/speech";
 import type { TextToSpeechProvider } from "../speech/speech-provider.js";
 
+/** Kokoro English v0.19 speakers of the named agent voices (am_michael, am_adam). */
+export const SPEECH_VOICE_SPEAKERS: Record<SpeechVoice, number> = { michael: 6, adam: 5 };
 /** Segments longer than this are split at a word boundary so synthesis stays incremental. */
 export const SPEECH_SEGMENT_CHARS = 280;
 /** Extra time a client gets beyond the delivered audio to report the end of playback. */
@@ -78,6 +81,8 @@ export interface SpeakInput {
   target: SpeechTarget;
   tts: TextToSpeechProvider;
   signal: AbortSignal;
+  /** Model speaker of the requested voice; the engine default when absent. */
+  speakerId?: number;
 }
 interface ActiveUtterance {
   utterance: string;
@@ -136,27 +141,34 @@ export class SpeechUtterances {
         () => input.signal.removeEventListener("abort", abort),
         { once: true },
       );
-      void this.synthesize(entry, input.text, input.tts).catch((error: unknown) => {
-        const failure =
-          error instanceof VisualFailure
-            ? error
-            : new VisualFailure(
-                "TTS_FAILED",
-                `Local speech synthesis failed: ${error instanceof Error ? error.message : String(error)}`,
-                input.utterance,
-              );
-        if (this.fail(entry, failure)) this.sendCancel(entry);
-      });
+      void this.synthesize(entry, input.text, input.tts, input.speakerId).catch(
+        (error: unknown) => {
+          const failure =
+            error instanceof VisualFailure
+              ? error
+              : new VisualFailure(
+                  "TTS_FAILED",
+                  `Local speech synthesis failed: ${error instanceof Error ? error.message : String(error)}`,
+                  input.utterance,
+                );
+          if (this.fail(entry, failure)) this.sendCancel(entry);
+        },
+      );
     });
   }
 
-  private async synthesize(entry: ActiveUtterance, text: string, tts: TextToSpeechProvider) {
+  private async synthesize(
+    entry: ActiveUtterance,
+    text: string,
+    tts: TextToSpeechProvider,
+    speakerId: number | undefined,
+  ) {
     const signal = entry.synthesis.signal;
     let index = 0;
     let audioMs = 0;
     for (const segment of segmentSpeechText(text)) {
       if (segment.trim().length === 0) continue;
-      const result = await tts.synthesizeSpeech(segment);
+      const result = await tts.synthesizeSpeech(segment, { speakerId });
       const parts: Buffer[] = [];
       for await (const part of result.stream) {
         if (!Buffer.isBuffer(part))

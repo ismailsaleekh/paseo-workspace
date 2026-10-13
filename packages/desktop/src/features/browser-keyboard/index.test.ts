@@ -20,6 +20,7 @@ class FakeBrowserContents {
   public readonly reloads: string[] = [];
   public readonly sent: SentMessage[] = [];
   private destroyed = false;
+  public focused = true;
   private readonly destroyedListeners: Array<() => void> = [];
   private readonly domReadyListeners: Array<() => void> = [];
   private finishLoadListener: (() => void) | null = null;
@@ -38,6 +39,10 @@ class FakeBrowserContents {
 
   public isDestroyed(): boolean {
     return this.destroyed;
+  }
+
+  public isFocused(): boolean {
+    return this.focused && !this.destroyed;
   }
 
   public isLoadingMainFrame(): boolean {
@@ -165,6 +170,207 @@ function createBrowserKeyboard() {
 }
 
 describe("BrowserKeyboard", () => {
+  test("main-owned native input reuses policy without creating a browser target or trusting guest IPC", () => {
+    const registry = new PaseoBrowserWebviewRegistry();
+    const keyboard = new BrowserKeyboard(registry);
+    const visual = new FakeBrowserContents(201);
+    const host = new FakeBrowserContents(202);
+    const sourceId = "paseo-visual:document-nonce";
+    const prefix = {
+      alt: false,
+      code: "KeyJ",
+      control: true,
+      key: "j",
+      meta: false,
+      repeat: false as const,
+      shift: false,
+    };
+    keyboard.publish(host.id, { menuPrefixes: [prefix], prefixes: [prefix] });
+    const forwarded = {
+      browserId: sourceId,
+      alt: false,
+      code: "KeyJ",
+      control: true,
+      key: "j",
+      meta: false,
+      repeat: false,
+      shift: false,
+    };
+    keyboard.forwardShortcutInput(visual, forwarded);
+    expect(host.sent).toEqual([]);
+    expect(visual.sent).toEqual([]);
+    let prevented = 0;
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: host,
+        sourceId,
+        event: {
+          preventDefault: () => {
+            prevented++;
+          },
+        },
+        input: electronInput({ control: true, code: "KeyJ", key: "j" }),
+      }),
+    ).toBe(true);
+    expect(prevented).toBe(1);
+    expect(host.sent).toEqual([
+      { channel: "paseo:event:browser-shortcut-input", payload: forwarded },
+    ]);
+    expect(visual.ignoredMenuShortcuts).toEqual([true]);
+    expect(registry.getRegistrationForWebContents(visual.id)).toBeNull();
+    expect(visual.sent).toEqual([]);
+  });
+
+  test("native forwarding follows rebinding and chord policy while preserving Enter, IME, repeat and editable exclusions", () => {
+    const keyboard = new BrowserKeyboard(new PaseoBrowserWebviewRegistry());
+    const visual = new FakeBrowserContents(211);
+    const host = new FakeBrowserContents(212);
+    const sourceId = "paseo-visual:isolated";
+    let prevented = 0;
+    const dispatch = (input: Partial<Electron.Input>) =>
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: host,
+        sourceId,
+        event: {
+          preventDefault: () => {
+            prevented++;
+          },
+        },
+        input: electronInput(input),
+      });
+    const idle = {
+      alt: false,
+      code: "KeyJ",
+      control: true,
+      key: "j",
+      meta: false,
+      repeat: false as const,
+      shift: false,
+    };
+    const next = { ...idle, code: "F11", key: "F11" };
+    keyboard.publish(host.id, { menuPrefixes: [idle], prefixes: [next] });
+    expect(dispatch({ control: true, code: "KeyJ", key: "j" })).toBe(false);
+    expect(visual.ignoredMenuShortcuts).toEqual([true]);
+    expect(dispatch({ control: true, code: "F11", key: "F11" })).toBe(true);
+    expect(host.sent).toHaveLength(1);
+    const refusedInputs: Partial<Electron.Input>[] = [
+      { control: true, code: "F11", key: "F11", isComposing: true },
+      { control: true, code: "F11", key: "Process" },
+      { control: true, code: "F11", key: "F11", type: "keyUp" },
+      { control: true, code: "F11", key: "F11", isAutoRepeat: true },
+      { code: "Enter", key: "Enter" },
+    ];
+    for (const input of refusedInputs) expect(dispatch(input)).toBe(false);
+    keyboard.publish(host.id, { menuPrefixes: [next], prefixes: [{ ...next, editable: false }] });
+    expect(dispatch({ control: true, code: "F11", key: "F11" })).toBe(false);
+    keyboard.publish(host.id, { menuPrefixes: [], prefixes: [] });
+    expect(dispatch({ control: true, code: "F11", key: "F11" })).toBe(false);
+    expect(prevented).toBe(1);
+    expect(host.sent).toHaveLength(1);
+  });
+
+  test("native input cannot cross an unfocused, destroyed or different host policy boundary", () => {
+    const keyboard = new BrowserKeyboard(new PaseoBrowserWebviewRegistry());
+    const visual = new FakeBrowserContents(221);
+    const host = new FakeBrowserContents(222);
+    const otherHost = new FakeBrowserContents(223);
+    const prefix = { alt: false, code: "KeyJ", control: true, meta: false, shift: false };
+    keyboard.publish(host.id, { menuPrefixes: [prefix], prefixes: [prefix] });
+    const input = electronInput({ control: true, code: "KeyJ", key: "j" });
+    const event = {
+      preventDefault: () => {
+        throw new Error("Refused input must not be consumed");
+      },
+    };
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: otherHost,
+        sourceId: "paseo-visual:owned",
+        event,
+        input,
+      }),
+    ).toBe(false);
+    visual.focused = false;
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: host,
+        sourceId: "paseo-visual:owned",
+        event,
+        input,
+      }),
+    ).toBe(false);
+    visual.focused = true;
+    keyboard.detachHost(host.id);
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: host,
+        sourceId: "paseo-visual:owned",
+        event,
+        input,
+      }),
+    ).toBe(false);
+    host.destroy();
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: host,
+        sourceId: "paseo-visual:owned",
+        event,
+        input,
+      }),
+    ).toBe(false);
+    visual.destroy();
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: otherHost,
+        sourceId: "paseo-visual:owned",
+        event,
+        input,
+      }),
+    ).toBe(false);
+    expect(host.sent).toEqual([]);
+    expect(otherHost.sent).toEqual([]);
+  });
+
+  test("native policy consumption does not change registered browser forwarding or page first refusal", () => {
+    const { attach, keyboard } = createBrowserKeyboard();
+    const browser = new FakeBrowserContents(231);
+    const visual = new FakeBrowserContents(232);
+    const host = new FakeBrowserContents(233);
+    const prefix = { alt: false, code: "KeyJ", control: true, key: "j", meta: false, shift: false };
+    keyboard.publish(host.id, { menuPrefixes: [prefix], prefixes: [prefix] });
+    attach({ browserId: "real-browser", contents: browser, hostContents: host });
+    const input = electronInput({ control: true, code: "KeyJ", key: "j" });
+    expect(browser.input(input)).toBe(false);
+    expect(
+      keyboard.handleTrustedNativeInput({
+        contents: visual,
+        hostContents: host,
+        sourceId: "paseo-visual:owned",
+        event: { preventDefault: () => {} },
+        input,
+      }),
+    ).toBe(true);
+    keyboard.forwardShortcutInput(browser, { ...prefix, browserId: "real-browser", repeat: false });
+    expect(host.sent.map((message) => message.payload)).toEqual([
+      { ...prefix, browserId: "paseo-visual:owned", repeat: false },
+      { ...prefix, browserId: "real-browser", repeat: false },
+    ]);
+    expect(browser.ignoredMenuShortcuts).toEqual([true]);
+    expect(browser.sent).toEqual([
+      {
+        channel: "paseo:browser-keyboard-policy",
+        payload: { browserId: "real-browser", menuPrefixes: [prefix], prefixes: [prefix] },
+      },
+    ]);
+  });
+
   test("forwards a validated guest shortcut to its host", () => {
     const { attach, keyboard } = createBrowserKeyboard();
     const guest = new FakeBrowserContents(51);

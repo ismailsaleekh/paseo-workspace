@@ -41,3 +41,8 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // Background speech runs a React Native headless task (HeadlessJsTaskService).
+  implementation "com.facebook.react:react-android"
+}

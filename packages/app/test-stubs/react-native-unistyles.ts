@@ -85,7 +85,25 @@ function isStyleFactory<T>(styles: T | StyleFactory<T>): styles is StyleFactory<
   return typeof styles === "function";
 }
 
+let configuredBreakpoints: Record<string, number> = {};
+// Same rule as the web runtime: the widest configured breakpoint not exceeding the window width.
+function currentBreakpoint(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  let match: string | undefined;
+  let matchedWidth = -1;
+  for (const [name, minWidth] of Object.entries(configuredBreakpoints)) {
+    if (window.innerWidth >= minWidth && minWidth > matchedWidth) {
+      match = name;
+      matchedWidth = minWidth;
+    }
+  }
+  return match;
+}
+
 export const StyleSheet = {
+  configure: (config: { breakpoints?: Record<string, number> }) => {
+    configuredBreakpoints = config.breakpoints ?? {};
+  },
   create: <T>(styles: T | StyleFactory<T>): T =>
     isStyleFactory(styles) ? styles(testTheme) : styles,
 };
@@ -94,8 +112,8 @@ export const withUnistyles = <T>(Component: T): T => Component;
 
 export const useUnistyles = () => ({
   theme: testTheme,
-  rt: {},
-  breakpoint: undefined,
+  rt: { breakpoint: currentBreakpoint() },
+  breakpoint: currentBreakpoint(),
 });
 
 export const UnistylesRuntime = {

@@ -5,6 +5,7 @@ import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
 import { generateMessageId } from "@/types/stream";
 import { AttemptGuard } from "@/utils/attempt-guard";
+import { useReportMicrophoneActivity } from "@/voice/microphone-activity";
 import {
   DURATION_TICK_MS,
   PCM_DICTATION_FORMAT,
@@ -57,6 +58,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     onPermanentFailureRef.current = onPermanentFailure;
   }, [onPermanentFailure]);
 
+  useReportMicrophoneActivity(isRecording);
   const isRecordingRef = useRef(isRecording);
   useEffect(() => {
     isRecordingRef.current = isRecording;

@@ -14,6 +14,7 @@ class ExpoTwoWayAudioModule : Module() {
         private const val ON_OUTPUT_VOLUME_LEVEL_EVENT = "onOutputVolumeLevelData"
         private const val ON_RECORDING_CHANGE_EVENT = "onRecordingChange"
         private const val ON_AUDIO_INTERRUPTION_EVENT = "onAudioInterruption"
+        private const val ON_STOP_SPEECH_REQUEST_EVENT = "onStopSpeechRequest"
         var audioEngine: AudioEngine? = null
     }
 
@@ -75,6 +76,31 @@ class ExpoTwoWayAudioModule : Module() {
              audioEngine?.isPlaying ?: false
          }
 
+        // User-enabled background speech playback (see SpeechPlaybackService).
+        Function("setBackgroundPlayback") { enabled: Boolean ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("The React context is unavailable")
+            if (enabled) {
+                SpeechPlaybackService.start(context)
+            } else {
+                SpeechPlaybackService.stop(context)
+            }
+        }
+
+        Function("isBackgroundPlaybackRunning") {
+            SpeechPlaybackService.running
+        }
+
+        OnCreate {
+            SpeechPlaybackService.onStopSpeech = {
+                sendEvent(ON_STOP_SPEECH_REQUEST_EVENT, bundleOf())
+            }
+        }
+
+        OnDestroy {
+            SpeechPlaybackService.onStopSpeech = null
+        }
+
          Function("stopPlayback") {
              audioEngine?.stopPlayback()
          }
@@ -117,7 +143,8 @@ class ExpoTwoWayAudioModule : Module() {
             ON_INPUT_VOLUME_LEVEL_EVENT,
             ON_OUTPUT_VOLUME_LEVEL_EVENT,
             ON_RECORDING_CHANGE_EVENT,
-            ON_AUDIO_INTERRUPTION_EVENT
+            ON_AUDIO_INTERRUPTION_EVENT,
+            ON_STOP_SPEECH_REQUEST_EVENT
         )
     }
 

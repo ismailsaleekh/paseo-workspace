@@ -71,11 +71,7 @@ export default function registerTestProvider(pi: ExtensionAPI): void {
           messages: context.messages,
         }) + "\n",
       );
-      const lastUser = context.messages.findLastIndex(
-        (message) =>
-          message.role === "user" &&
-          !userText(message.content).startsWith("<pi-workspace-context>"),
-      );
+      const lastUser = context.messages.findLastIndex((message) => message.role === "user");
       const user = context.messages[lastUser];
       if (!user || user.role !== "user") throw new Error("Test request has no user message");
       const text = userText(user.content);

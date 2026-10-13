@@ -2,7 +2,11 @@ import React, { type RefCallback } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useWebOverlayRegistration } from "./overlay-root";
+import {
+  hasActiveWebOverlay,
+  subscribeWebOverlayActivity,
+  useWebOverlayRegistration,
+} from "./overlay-root";
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
@@ -42,6 +46,35 @@ describe("useWebOverlayRegistration in the browser", () => {
     });
     await nextFrame();
   }
+
+  it("publishes central nested overlay activity until the last registered scope closes", async () => {
+    const activity: boolean[] = [];
+    const stop = subscribeWebOverlayActivity(() => activity.push(hasActiveWebOverlay()));
+    try {
+      const render = async (outer: boolean, inner: boolean) => {
+        flushSync(() =>
+          root.render(
+            <>
+              <OverlayHarness active={outer} showScope={outer} />
+              <OverlayHarness active={inner} showScope={inner} />
+            </>,
+          ),
+        );
+        await nextFrame();
+      };
+      await render(true, false);
+      expect(hasActiveWebOverlay()).toBe(true);
+      await render(true, true);
+      expect(hasActiveWebOverlay()).toBe(true);
+      await render(true, false);
+      expect(hasActiveWebOverlay()).toBe(true);
+      await render(false, false);
+      expect(hasActiveWebOverlay()).toBe(false);
+      expect(activity).toEqual([true, true, true, false]);
+    } finally {
+      stop();
+    }
+  });
 
   it("skips focus restoration for active scope detach but restores focus when closing", async () => {
     await renderHarness(true, true);

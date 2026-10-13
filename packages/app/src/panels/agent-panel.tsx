@@ -1,5 +1,7 @@
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
-import { VisualHost } from "@/pi-workspace/visual-host";
+import { ConnectedVisualHost } from "@/pi-workspace/visual-host";
+import { SpeechOrb } from "@/pi-workspace/speech-orb";
+import { usePanelStore } from "@/stores/panel-store";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -1282,9 +1284,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
 
   const dockContent = (
     <View style={styles.contentContainer}>
-      {effectiveAgent.provider === "pi" && hasActiveComposer ? (
-        <VisualHost serverId={serverId} agentId={agentId} />
-      ) : null}
       {streamContent}
 
       {showHistorySyncError ? (
@@ -1313,6 +1312,15 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     </ChatSurface>
   );
 
+  const conversationDock =
+    effectiveAgent.provider === "pi" ? (
+      <PiVisualHost serverId={serverId} agentId={agentId}>
+        {dock}
+      </PiVisualHost>
+    ) : (
+      dock
+    );
+
   return (
     <RewindComposerRestoreProvider
       textSource={agentInputDraft.textSource}
@@ -1320,7 +1328,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       onRewindComplete={handleRewindComplete}
     >
       <View style={styles.root}>
-        {dock}
+        {conversationDock}
 
         {isArchivingCurrentAgent ? (
           <View style={styles.archivingOverlay} testID="agent-archiving-overlay">
@@ -1862,3 +1870,30 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: "center",
   },
 }));
+
+const FOCUS_MODE_SPEECH_ORB = <SpeechOrb />;
+
+function PiVisualHost({
+  serverId,
+  agentId,
+  children,
+}: {
+  serverId: string;
+  agentId: string;
+  children: ReactNode;
+}) {
+  const client = useHostRuntimeClient(serverId);
+  const compact = useIsCompactFormFactor();
+  // Desktop focus mode hides the workspace header and its speech orb; the chat keeps it reachable.
+  const focusMode = usePanelStore((state) => state.desktop.focusModeEnabled) && !compact;
+  if (!client) return children;
+  return (
+    <ConnectedVisualHost
+      client={client}
+      agentId={agentId}
+      chromeAccessory={focusMode ? FOCUS_MODE_SPEECH_ORB : null}
+    >
+      {children}
+    </ConnectedVisualHost>
+  );
+}

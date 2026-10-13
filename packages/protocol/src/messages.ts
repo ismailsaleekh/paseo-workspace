@@ -1,10 +1,15 @@
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
 import {
+  VisualLibraryRequestSchema,
+  VisualLibraryResponseSchema,
   VisualSubscribeRequestSchema,
   VisualSubscribeResponseSchema,
   VisualEventMessageSchema,
   VisualReceiptRequestSchema,
   VisualReceiptResponseSchema,
+  SpeechObserveRequestSchema,
+  SpeechObserveResponseSchema,
+  SpeechUpdateMessageSchema,
 } from "./pi-workspace/rpc-schemas.js";
 import {
   BackgroundJobsObserveRequestSchema,
@@ -3181,6 +3186,8 @@ export const SubscriptionReleaseResponseSchema = z.object({
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VisualSubscribeRequestSchema,
   VisualReceiptRequestSchema,
+  VisualLibraryRequestSchema,
+  SpeechObserveRequestSchema,
   BackgroundJobsObserveRequestSchema,
   BackgroundJobsListRequestSchema,
   BackgroundJobDetailRequestSchema,
@@ -3711,6 +3718,9 @@ export const ServerInfoStatusPayloadSchema = z
         explicitEventSubscriptions: z.boolean().optional(),
         ownedSubscriptions: z.boolean().optional(),
         piWorkspace: z.boolean().optional(),
+        piVisualLibrary: z.boolean().optional(),
+        // COMPAT(piSpeech): added in v0.10.4, remove gate after 2027-12-01.
+        piSpeech: z.boolean().optional(),
         // COMPAT(piBackgroundJobs): added in v0.10.4, remove gate after 2027-12-01.
         piBackgroundJobs: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
@@ -6766,9 +6776,12 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
 });
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  VisualLibraryResponseSchema,
   VisualSubscribeResponseSchema,
   VisualReceiptResponseSchema,
   VisualEventMessageSchema,
+  SpeechObserveResponseSchema,
+  SpeechUpdateMessageSchema,
   BackgroundJobsObserveResponseSchema,
   BackgroundJobsUpdateMessageSchema,
   BackgroundJobsListResponseSchema,

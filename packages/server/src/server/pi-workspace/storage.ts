@@ -40,6 +40,9 @@ const StoredSnapshotSchema = z
     snapshot: z.unknown(),
   })
   .strict();
+const ArchivedSnapshotSchema = StoredSnapshotSchema.extend({
+  revision: VisualRevisionSchema,
+}).strict();
 type StoredVisual = z.infer<typeof StoredVisualSchema>;
 
 export interface CreateVisualInput {
@@ -69,6 +72,16 @@ export interface SaveVisualStateInput extends VisualAddress {
 export interface ListVisualsInput {
   owner: VisualOwner;
   cursor?: string;
+}
+export interface VisualVersionsInput extends VisualAddress {
+  cursor?: number;
+}
+export interface VisualVersionInput extends VisualAddress {
+  revision: number;
+}
+export interface VisualVersionsPage {
+  items: { revision: number }[];
+  nextCursor: number | null;
 }
 export interface VisualListItem {
   id: string;
@@ -283,6 +296,90 @@ export class VisualStorage {
     return this.serialized(async () => this.document(await this.load(address)));
   }
 
+  /** Walk the published head's ancestry, never directory entries or nextRevision. */
+  private async committedSource(
+    record: StoredVisual,
+    revision: number,
+  ): Promise<{ source: z.infer<typeof StoredSourceSchema>; child: number | null }> {
+    const address = { owner: record.owner, id: record.id };
+    let current = record.revision;
+    let child: number | null = null;
+    while (current > 0) {
+      const source = await this.source(address, current);
+      if (source.previousRevision >= current)
+        throw new VisualFailure("CORRUPT_STORAGE", "Visual ancestry does not descend");
+      if (current === revision) return { source, child };
+      if (current < revision) break;
+      child = current;
+      current = source.previousRevision;
+    }
+    throw new VisualFailure(
+      "UNKNOWN_REVISION",
+      "Visual revision is not committed in this conversation",
+    );
+  }
+
+  async listVersions(input: VisualVersionsInput): Promise<VisualVersionsPage> {
+    return this.serialized(async () => {
+      const record = await this.load(input);
+      let revision = record.revision;
+      if (input.cursor !== undefined) {
+        if (!VisualRevisionSchema.safeParse(input.cursor).success)
+          throw new VisualFailure("INVALID_CURSOR", "Invalid visual history cursor");
+        try {
+          revision = (await this.committedSource(record, input.cursor)).source.previousRevision;
+        } catch (error) {
+          if (!(error instanceof VisualFailure) || error.code !== "UNKNOWN_REVISION") throw error;
+          throw new VisualFailure("INVALID_CURSOR", "History cursor is not a committed revision");
+        }
+      }
+      const items: VisualVersionsPage["items"] = [];
+      while (revision > 0 && items.length < 50) {
+        const source = await this.source(input, revision);
+        if (source.previousRevision >= revision)
+          throw new VisualFailure("CORRUPT_STORAGE", "Visual ancestry does not descend");
+        items.push({ revision });
+        revision = source.previousRevision;
+      }
+      const last = items.at(-1);
+      return { items, nextCursor: revision > 0 && last ? last.revision : null };
+    });
+  }
+
+  async getVersion(input: VisualVersionInput): Promise<VisualDocument> {
+    return this.serialized(async () => {
+      const record = await this.load(input);
+      if (!VisualRevisionSchema.safeParse(input.revision).success)
+        throw new VisualFailure("UNKNOWN_REVISION", "Invalid visual revision");
+      if (input.revision === record.revision) return this.document(record);
+      const { source, child } = await this.committedSource(record, input.revision);
+      if (child === null)
+        throw new VisualFailure("CORRUPT_STORAGE", "Historical revision has no committed child");
+      let archive: z.infer<typeof ArchivedSnapshotSchema> | null = null;
+      try {
+        const value = await readJson(join(this.location(input), `archive-${child}.json`));
+        const parsed = ArchivedSnapshotSchema.safeParse(value);
+        if (!parsed.success || parsed.data.revision !== input.revision)
+          throw new VisualFailure("CORRUPT_STORAGE", "Invalid archived visual state");
+        archive = parsed.data;
+      } catch (error) {
+        // Pre-library commits have source ancestry but did not archive compatible snapshots.
+        if (!isMissing(error)) throw error;
+      }
+      return {
+        id: record.id,
+        title: record.title,
+        revision: source.revision,
+        html: source.html,
+        stateRevision: archive ? archive.stateRevision : 1,
+        snapshot: archive
+          ? parseVisualSnapshot(archive.snapshot)
+          : { state: null, selection: null },
+        historyState: archive ? "archived" : "initial",
+      };
+    });
+  }
+
   async list(input: ListVisualsInput): Promise<VisualPage> {
     if (input.cursor !== undefined) VisualIdSchema.parse(input.cursor);
     return this.serialized(async () => {
@@ -362,6 +459,22 @@ export class VisualStorage {
       const staged = await this.source(input, input.revision);
       if (staged.previousRevision !== record.revision) {
         throw new VisualFailure("STALE_REVISION", "Visual replacement belongs to an older source");
+      }
+      const previous = await this.document(record);
+      const location = this.location(input);
+      const temporary = join(location, `.archive-${input.revision}-${randomUUID()}.tmp`);
+      try {
+        await writeDurableJson(temporary, {
+          revision: record.revision,
+          stateRevision: record.stateRevision,
+          snapshot: previous.snapshot,
+        });
+        // This child's source is still staged. Its archive becomes immutable when head commits.
+        await rename(temporary, join(location, `archive-${input.revision}.json`));
+        await syncDirectory(location);
+      } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
       }
       const updated = await this.writeState({ ...record, revision: input.revision }, snapshot);
       await this.replace(updated);

@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { SPEECH_TEXT_CHARS, SpeechResultSchema } from "./speech.js";
+import {
+  SPEECH_TEXT_CHARS,
+  SpeechDeviceSchema,
+  SpeechResultSchema,
+  SpeechVoiceSchema,
+} from "./speech.js";
 
 export const VISUAL_SOURCE_BYTES = 1024 * 1024;
 export const VISUAL_FRAME_BYTES = 4 * 1024 * 1024;
@@ -54,8 +59,28 @@ export const VisualDocumentSchema = z
     stateRevision: VisualRevisionSchema,
     html: z.string().max(VISUAL_SOURCE_BYTES),
     snapshot: VisualSnapshotSchema,
+    /** Historical state is archived, or explicitly absent on pre-library commits. */
+    historyState: z.enum(["archived", "initial"]).optional(),
   })
   .strict();
+export const VisualLibraryPageSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: VisualIdSchema,
+        title: z.string().min(1).max(256),
+        revision: VisualRevisionSchema,
+      }),
+    )
+    .max(50),
+  nextCursor: VisualIdSchema.nullable(),
+});
+export const VisualVersionsPageSchema = z.object({
+  items: z.array(z.object({ revision: VisualRevisionSchema })).max(50),
+  nextCursor: VisualRevisionSchema.nullable(),
+});
+export type VisualLibraryPage = z.infer<typeof VisualLibraryPageSchema>;
+export type VisualVersionsPage = z.infer<typeof VisualVersionsPageSchema>;
 export const VisualDeliveryStatusSchema = z.enum(["stored", "rendered", "disconnected", "error"]);
 
 export const VisualClientSchema = z
@@ -226,6 +251,8 @@ export const VisualLocalRequestSchema = z.discriminatedUnion("kind", [
       requestId: z.string().uuid(),
       utterance: z.string().uuid(),
       text: z.string().min(1).max(SPEECH_TEXT_CHARS),
+      voice: SpeechVoiceSchema.optional(),
+      device: SpeechDeviceSchema.optional(),
     })
     .strict(),
 ]);

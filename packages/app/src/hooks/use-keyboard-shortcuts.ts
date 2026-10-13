@@ -16,7 +16,6 @@ import {
 import { resolveKeyboardFocusScope } from "@/keyboard/focus-scope";
 import {
   buildBrowserKeyboardPolicy,
-  parseBrowserShortcutInput,
   shouldPublishBrowserShortcutPolicy,
 } from "@/desktop/browser/shortcuts";
 import type { KeyboardFocusScope, KeyboardShortcutPayload } from "@/keyboard/actions";
@@ -35,6 +34,7 @@ import { getDesktopHost, isElectronRuntime } from "@/desktop/host";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { buildOpenProjectRoute } from "@/utils/host-routes";
 import { hasActiveWebOverlay } from "@/lib/overlay-root";
+import { createBrowserShortcutInputHandler } from "./browser-shortcut-input";
 import {
   type ActiveWorkspaceSelection,
   navigateToLastWorkspace,
@@ -68,6 +68,7 @@ export function useKeyboardShortcuts({
   const shortcutsAvailable = keyboardShortcutsAvailable({ isNative, isCompact: isMobile });
   const isDesktopApp = getIsElectronRuntime();
   const isMac = getShortcutOs() === "mac";
+  const browserInputActiveRef = useRef(false);
   const chordStateRef = useRef<ChordState>({
     candidateIndices: [],
     step: 0,
@@ -369,23 +370,25 @@ export function useKeyboardShortcuts({
     }
   });
 
-  const handleBrowserShortcutInput = useStableEvent((payload: unknown) => {
-    const input = parseBrowserShortcutInput(payload);
-    if (!input) {
-      return;
-    }
-    resolveAndPerformShortcut({
-      event: input,
-      focusScope: "browser",
-      domEvent: null,
-      browserFocusRestoreElement: getResidentBrowserWebview(input.browserId),
-    });
-  });
+  const handleBrowserShortcutInput = useStableEvent(
+    createBrowserShortcutInputHandler({
+      active: () => browserInputActiveRef.current && enabled && shortcutsAvailable,
+      visible: shouldHandle,
+      perform: (input) =>
+        resolveAndPerformShortcut({
+          event: input,
+          focusScope: "browser",
+          domEvent: null,
+          browserFocusRestoreElement: getResidentBrowserWebview(input.browserId),
+        }),
+    }),
+  );
 
   useEffect(() => {
     if (!enabled) return;
     if (!shortcutsAvailable) return;
 
+    browserInputActiveRef.current = true;
     const handleBlurOrHide = () => {
       resetModifiers();
     };
@@ -399,6 +402,7 @@ export function useKeyboardShortcuts({
       ? getDesktopHost()?.events?.on?.("browser-shortcut-input", handleBrowserShortcutInput)
       : null;
     return () => {
+      browserInputActiveRef.current = false;
       if (chordStateRef.current.timeoutId !== null) {
         clearTimeout(chordStateRef.current.timeoutId);
         chordStateRef.current = {

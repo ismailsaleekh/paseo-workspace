@@ -16,12 +16,16 @@ export interface AudioInterruptionEvent {
   data: string;
 }
 
+/** The user tapped Stop in the background playback notification. */
+export type StopSpeechRequestEvent = Record<string, never>;
+
 export interface ExpoTwoWayAudioEventMap {
   onMicrophoneData: MicrophoneDataEvent;
   onInputVolumeLevelData: VolumeLevelEvent;
   onOutputVolumeLevelData: VolumeLevelEvent;
   onRecordingChange: RecordingChangeEvent;
   onAudioInterruption: AudioInterruptionEvent;
+  onStopSpeechRequest: StopSpeechRequestEvent;
 }
 
 // These are useful for defining `useCallback` types inline

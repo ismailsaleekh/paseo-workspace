@@ -207,3 +207,31 @@ test("the private connection carries speak frames and resolves with the host's s
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("speak passes a named voice and a requested device, and refuses unknown voices", async () => {
+  const host = new SpeechHost(async (request) => ({
+    kind: "speech",
+    utterance: request.utterance,
+    status: "completed",
+    client,
+    durationMs: 1,
+  }));
+  const details = await executeSpeakTool({
+    input: { text: "Adam explains.", voice: "adam", device: "phone" },
+    connection: host,
+    signal: undefined,
+    createUtterance: () => utterance,
+  });
+  assert.equal(details.kind, "speech");
+  assert.deepEqual(host.requests, [
+    { utterance, text: "Adam explains.", voice: "adam", device: "phone" },
+  ]);
+  const unknown = await executeSpeakTool({
+    input: { text: "Who?", voice: "george" },
+    connection: host,
+    signal: undefined,
+    createUtterance: () => utterance,
+  });
+  assert.equal(unknown.kind === "error" ? unknown.error.code : "", "INVALID_ARGUMENT");
+  assert.equal(host.requests.length, 1, "an unknown voice is never substituted");
+});

@@ -131,6 +131,7 @@ import {
 import { buildNotificationRoute, resolveNotificationTarget } from "@/utils/notification-routing";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { PluginCatalogSync } from "@/plugins";
+import { AppSpeechHost } from "@/pi-workspace/speech-connection";
 import {
   ensureOsNotificationPermission,
   WEB_NOTIFICATION_CLICK_EVENT,
@@ -275,6 +276,7 @@ function ManagedDaemonSession({ daemon }: { daemon: HostProfile }) {
     <SessionProvider key={daemon.serverId} serverId={daemon.serverId} client={client}>
       <LegacyFavoriteProfileMigrationBootstrap serverId={daemon.serverId} client={client} />
       <PluginCatalogSync serverId={daemon.serverId} client={client} />
+      <AppSpeechHost client={client} />
     </SessionProvider>
   );
 }

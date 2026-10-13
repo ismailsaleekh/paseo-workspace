@@ -63,6 +63,11 @@ export interface SpeechStreamResult {
   format: string;
 }
 
+export interface SpeechSynthesisOptions {
+  /** Model speaker for this request; the provider's configured speaker when absent. */
+  speakerId?: number;
+}
+
 export interface TextToSpeechProvider {
-  synthesizeSpeech(text: string): Promise<SpeechStreamResult>;
+  synthesizeSpeech(text: string, options?: SpeechSynthesisOptions): Promise<SpeechStreamResult>;
 }

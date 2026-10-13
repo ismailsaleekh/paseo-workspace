@@ -462,6 +462,12 @@ class AudioEngine (context: Context) {
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
+    fun pauseRecording() {
+        isRecordingBeforePause = isRecording
+        isRecording = toggleRecording(false)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
     fun pauseRecordingAndPlayer() {
         isRecordingBeforePause = isRecording
         isRecording = toggleRecording(false)

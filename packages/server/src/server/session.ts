@@ -6,7 +6,7 @@ import {
 } from "./session/pi-background-jobs/session.js";
 import type { PiBackgroundJobsHub } from "./pi-background-jobs/hub.js";
 import type { ClientPresenceState } from "./agent-attention-policy.js";
-import { VisualFailure } from "@getpaseo/protocol/pi-workspace/contracts";
+import { VisualFailure, type VisualOwner } from "@getpaseo/protocol/pi-workspace/contracts";
 import type { VisualService } from "./pi-workspace/service.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
@@ -897,12 +897,25 @@ export class Session {
     this.agentManager = agentManager;
     this.piWorkspace = new VisualSession({
       service: options.piWorkspace,
+      clientId: this.clientId,
       delivery: this.delivery,
-      assertAgent: (agentId) => {
-        const agent = this.agentManager.getAgent(agentId);
+      assertAgent: async (agentId) => {
+        const agent = this.agentManager.getAgent(agentId) ?? (await agentStorage.get(agentId));
         if (!agent || agent.internal || agent.provider !== "pi") {
           throw new VisualFailure("UNKNOWN_AGENT", "Visuals require a managed Pi agent");
         }
+      },
+      owner: async (agentId): Promise<VisualOwner | null> => {
+        const live = this.agentManager.getAgent(agentId);
+        const stored = live ? null : await agentStorage.get(agentId);
+        const agent = live ?? stored;
+        if (!agent || agent.internal || agent.provider !== "pi")
+          throw new VisualFailure("UNKNOWN_AGENT", "Visuals require a managed Pi agent");
+        const persistence = agent.persistence;
+        const sessionId =
+          agent.runtimeInfo?.sessionId ??
+          (persistence?.provider === "pi" ? persistence.sessionId : null);
+        return sessionId ? { agentId, sessionId } : null;
       },
       reply: (message) => this.emit(message),
       presence: (source) => this.clientPresence(source),
@@ -3918,6 +3931,7 @@ export class Session {
         clearPendingPermissions: true,
         logger: this.sessionLogger,
       });
+      this.piWorkspace.noteUserMessage(agentId);
       return { ok: true };
     } catch (error) {
       this.handleAgentRunError(agentId, error, "Failed to send agent message");
@@ -8147,6 +8161,7 @@ export class Session {
       } else {
         await send();
       }
+      this.piWorkspace.noteUserMessage(agentId);
 
       this.emit({
         type: "send_agent_message_response",

@@ -15,6 +15,8 @@ import {
 import {
   SPEECH_OPERATION_TIMEOUT_MS,
   type SpeechResult,
+  type SpeechDevice,
+  type SpeechVoice,
 } from "@getpaseo/protocol/pi-workspace/speech";
 import type { BranchHost } from "./branch.js";
 
@@ -28,6 +30,8 @@ export interface VisualToolConnection {
 export interface SpeakRequest {
   utterance: string;
   text: string;
+  voice?: SpeechVoice;
+  device?: SpeechDevice;
 }
 export interface SpeechToolConnection {
   speak(request: SpeakRequest, signal?: AbortSignal): Promise<SpeechResult>;
@@ -244,6 +248,9 @@ export class VisualConnection implements VisualToolConnection, SpeechToolConnect
         requestId,
         utterance: request.utterance,
         text: request.text,
+        // Absent fields keep frames valid for hosts that predate named voices.
+        ...(request.voice === undefined ? {} : { voice: request.voice }),
+        ...(request.device === undefined ? {} : { device: request.device }),
       }),
       SPEECH_OPERATION_TIMEOUT_MS,
       signal,

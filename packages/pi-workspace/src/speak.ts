@@ -6,13 +6,29 @@ import { VisualFailure } from "@getpaseo/protocol/pi-workspace/contracts";
 import {
   SPEECH_DURATION_MS_LIMIT,
   SPEECH_TEXT_CHARS,
+  SpeechDeviceSchema,
   SpeechResultSchema,
+  SpeechVoiceSchema,
 } from "@getpaseo/protocol/pi-workspace/speech";
 import type { SpeechToolConnection } from "./connection.js";
 
 const objectOptions = { additionalProperties: false };
 export const speakParameters = Type.Object(
-  { text: Type.String({ minLength: 1, maxLength: SPEECH_TEXT_CHARS }) },
+  {
+    text: Type.String({ minLength: 1, maxLength: SPEECH_TEXT_CHARS }),
+    voice: Type.Optional(
+      Type.Union([Type.Literal("michael"), Type.Literal("adam")], {
+        description:
+          "Speaking voice. Michael (the user may call him Mike) is the default; use Adam only when the user asks for Adam.",
+      }),
+    ),
+    device: Type.Optional(
+      Type.Union([Type.Literal("computer"), Type.Literal("phone")], {
+        description:
+          "Only when the user asks for a device. Omit to play where the user is talking from.",
+      }),
+    ),
+  },
   objectOptions,
 );
 const Utterance = Type.String({ minLength: 1, maxLength: 256 });
@@ -46,6 +62,8 @@ const SpeakInputSchema = z
       .min(1)
       .max(SPEECH_TEXT_CHARS)
       .refine((text) => text.trim().length > 0, "Text has no words to speak"),
+    voice: SpeechVoiceSchema.optional(),
+    device: SpeechDeviceSchema.optional(),
   })
   .strict();
 
@@ -87,13 +105,23 @@ function failure(utterance: string | null, code: string, message: string): Speak
 export async function executeSpeakTool(input: ExecuteSpeakInput): Promise<SpeakDetails> {
   const parsed = SpeakInputSchema.safeParse(input.input);
   if (!parsed.success)
-    return failure(null, "INVALID_ARGUMENT", "speak needs non-blank text of 1-20000 characters");
+    return failure(
+      null,
+      "INVALID_ARGUMENT",
+      "speak needs non-blank text of 1-20000 characters, an optional voice (michael or adam) and an optional device (computer or phone)",
+    );
   const utterance = (input.createUtterance ?? randomUUID)();
   try {
     if (input.signal?.aborted)
       throw new VisualFailure("CANCELLED", "Speech was cancelled", utterance);
+    const { voice, device } = parsed.data;
     const received: unknown = await input.connection.speak(
-      { utterance, text: parsed.data.text },
+      {
+        utterance,
+        text: parsed.data.text,
+        ...(voice === undefined ? {} : { voice }),
+        ...(device === undefined ? {} : { device }),
+      },
       input.signal,
     );
     const result = SpeechResultSchema.safeParse(received);
@@ -133,7 +161,7 @@ export function createSpeakTool(
     name: "speak",
     label: "speak",
     description:
-      "Speak your own text aloud with the local text-to-speech engine on the one app client currently showing this conversation. The words are spoken exactly as supplied (sentence by sentence, never rewritten). Resolves after playback finishes (completed) or the user stops it (stopped); fails with CLIENT_UNAVAILABLE when no app shows the conversation and TTS_UNAVAILABLE without a local engine. Requires attached Paseo.",
+      "Speak your own text aloud with the user's local voice, exactly as written (never rewritten). Use the voice the user names: Michael by default (Mike is Michael) or Adam. A name only quoted or mentioned in passing is not a request to speak. Plays on one device: where the user is talking from, or the computer or phone they ask for. Resolves after playback finishes (completed) or the user stops it (stopped). After a stop, do not speak again until the user asks (SPEECH_STOPPED). DEVICE_UNAVAILABLE means that device cannot play now: tell the user rather than switching devices. Requires attached Paseo.",
     parameters: speakParameters,
     outputSchema: speakOutputSchema,
     exposure: "direct",

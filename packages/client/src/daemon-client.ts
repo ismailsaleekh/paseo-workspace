@@ -1,7 +1,11 @@
+import type { SpeechDevice } from "@getpaseo/protocol/pi-workspace/speech";
+import { type SpeechObserveResponse } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { subscribeTimeline, type TimelineMessage } from "./timeline-subscription/index.js";
 import type {
   VisualClientReceipt,
   VisualWireView,
+  VisualLibraryOperation,
+  VisualLibraryResult,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import type { VisualPlatform } from "@getpaseo/protocol/pi-workspace/contracts";
 import { ProviderSnapshotUpdates } from "./provider-snapshots/index.js";
@@ -2528,13 +2532,17 @@ export class DaemonClient {
     agentId: string,
     signal?: AbortSignal,
     platform?: VisualPlatform,
+    library = false,
   ): OwnedSubscription<PiWorkspaceSnapshot> {
     let resetSource = false;
     return this.owned.observe(
       async (accept) => {
         resetSource = false;
         const features = this.lastServerInfoMessage?.features;
-        if (features?.piWorkspace !== true || features.ownedSubscriptions !== true) {
+        const supported = library
+          ? features?.piVisualLibrary === true
+          : features?.piWorkspace === true;
+        if (!supported || features?.ownedSubscriptions !== true) {
           throw new Error("Update the Paseo host to use Pi visual workspaces");
         }
         const requestId = this.createRequestId();
@@ -2546,6 +2554,7 @@ export class DaemonClient {
               requestId,
               agentId,
               ...(platform === undefined ? {} : { platform }),
+              ...(library ? { library: true } : {}),
             },
             options: { skipQueue: true },
             select: (message) => {
@@ -2572,6 +2581,54 @@ export class DaemonClient {
         }
       },
     );
+  }
+
+  /**
+   * The app's agent speech: one source-owned subscription plays the speech of every
+   * conversation on this connection, whatever the app displays.
+   */
+  observePiSpeech(
+    device: SpeechDevice,
+    background: boolean,
+    signal?: AbortSignal,
+  ): OwnedSubscription<SpeechObserveResponse> {
+    return this.owned.observe(async (accept) => {
+      const features = this.lastServerInfoMessage?.features;
+      if (features?.piSpeech !== true || features.ownedSubscriptions !== true)
+        throw new Error("Update the Paseo host to play agent speech outside the conversation");
+      const requestId = this.createRequestId();
+      return this.sendRequest({
+        requestId,
+        message: {
+          type: "pi_workspace.speech.observe.request",
+          requestId,
+          device,
+          ...(background ? { background: true } : {}),
+        },
+        options: { skipQueue: true },
+        select: (message) => {
+          if (
+            message.type !== "pi_workspace.speech.observe.response" ||
+            message.payload.requestId !== requestId
+          )
+            return null;
+          accept(message.payload);
+          return message.payload;
+        },
+      });
+    }, signal);
+  }
+
+  async requestVisualLibrary(input: {
+    agentId: string;
+    clientGeneration: string;
+    operation: VisualLibraryOperation;
+  }): Promise<VisualLibraryResult> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"pi_workspace.library.response">({
+        message: { type: "pi_workspace.library.request", ...input },
+      });
+    return payload.result;
   }
 
   sendPiWorkspaceReceipt(

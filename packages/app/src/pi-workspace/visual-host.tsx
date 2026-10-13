@@ -1,33 +1,33 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useReducer,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { VisualSidebar } from "./visual-sidebar";
+import { visualSidebarLayout, VISUAL_CHAT_LAYOUT } from "./sidebar-layout";
 import { AppState, Platform, Text, View } from "react-native";
-import { requireOptionalNativeModule } from "expo";
+import { useAndroidRendererWarmup } from "./native-host";
 import { getIsElectron } from "@/constants/platform";
 import type { VisualPlatform } from "@getpaseo/protocol/pi-workspace/contracts";
 import { StyleSheet } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { useHostRuntimeClient } from "@/runtime/host-runtime";
-import { useRetainedPanelActive } from "@/components/retained-panel";
+import { RetainedPanel, useRetainedPanelActive } from "@/components/retained-panel";
 import { Button } from "@/components/ui/button";
-import { VisualController } from "./controller";
+import { VisualController, type VisualTransport } from "./controller";
 import { VisualDocument } from "./document";
-import { createAudioEngine } from "@/voice/audio-engine";
-import type { AudioEngine } from "@/voice/audio-engine-types";
-import { sharedSpeechPlayer, type SpeechPlayer } from "./speech-player";
-import { SpeechStop } from "./speech-stop";
 
-export interface VisualHostProps {
-  serverId: string;
-  agentId: string;
-}
+export type VisualHostClient = VisualTransport & Pick<DaemonClient, "requestVisualLibrary">;
 interface ConnectedVisualHostProps {
-  client: DaemonClient;
+  client: VisualHostClient;
   agentId: string;
-}
-
-export function VisualHost({ serverId, agentId }: VisualHostProps) {
-  const client = useHostRuntimeClient(serverId);
-  if (!client) return null;
-  return <ConnectedVisualHost client={client} agentId={agentId} />;
+  children: ReactNode;
+  /** Extra controls next to the Drawings toggle (the speech orb in desktop focus mode). */
+  chromeAccessory?: ReactNode;
 }
 
 function visualPlatform(): VisualPlatform {
@@ -52,51 +52,40 @@ function useAndroidForeground(): boolean {
   return foreground;
 }
 
-interface AndroidRendererWarmup {
-  prepare(): Promise<void>;
-  release(): Promise<void>;
-}
-// While a visual surface is active, keep the companion visual host started so a document's
-// display deadline does not include the host's cold start. Rendering still needs the document
-// view; this only binds and warms the host.
-function useAndroidRendererWarmup(active: boolean): void {
-  useEffect(() => {
-    if (Platform.OS !== "android" || !active) return undefined;
-    const host = requireOptionalNativeModule<AndroidRendererWarmup>("PaseoVisualHost");
-    if (!host) return undefined;
-    host.prepare().catch((error: unknown) => {
-      console.warn("Android visual host warm-up failed", error);
-    });
-    return () => {
-      host.release().catch((error: unknown) => {
-        console.warn("Android visual host warm-up release failed", error);
-      });
-    };
-  }, [active]);
-}
-
-function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
+export function ConnectedVisualHost({
+  client,
+  agentId,
+  children,
+  chromeAccessory = null,
+}: ConnectedVisualHostProps) {
+  const [reconnect, restart] = useReducer((version: number) => version + 1, 0);
+  const compact = useIsCompactFormFactor();
   const retained = useRetainedPanelActive();
   const foreground = useAndroidForeground();
   const active = retained && foreground;
   useAndroidRendererWarmup(active);
   const controller = useMemo(
-    () => new VisualController(client, agentId, visualPlatform()),
+    () => new VisualController(client, agentId, visualPlatform(), client),
     [client, agentId],
   );
-  const { player, holder } = useSpeechPlayer(controller, client, agentId);
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot,
   );
+  const library = useSyncExternalStore(
+    controller.subscribe,
+    controller.getLibrarySnapshot,
+    controller.getLibrarySnapshot,
+  );
+  const toggleLibrary = useCallback(() => {
+    void controller.setLibraryVisible(!library.visible);
+  }, [controller, library.visible]);
+  const retryLibrary = useCallback(() => {
+    void controller.refreshLibrary();
+  }, [controller]);
+  const layout = visualSidebarLayout(compact, library.visible && active);
   const reportError = useCallback((error: unknown) => controller.reportError(error), [controller]);
-  const restart = useCallback(() => {
-    void controller
-      .stop()
-      .then(() => controller.start())
-      .catch(reportError);
-  }, [controller, reportError]);
   useEffect(() => {
     let cancelled = false;
     if (active) {
@@ -106,14 +95,19 @@ function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
           if (!cancelled) controller.start();
           return undefined;
         })
-        .catch(reportError);
+        .catch((error: unknown) => {
+          if (!cancelled) reportError(error);
+          else console.warn("Obsolete visual host release failed", error);
+        });
     }
     return () => {
       cancelled = true;
-      void controller.stop().catch(reportError);
+      // A failure remains loud, but cannot publish into an inactive or replaced host.
+      void controller
+        .stop()
+        .catch((error: unknown) => console.warn("Visual host teardown failed", error));
     };
-  }, [controller, active, reportError]);
-  if (!active) return null;
+  }, [controller, active, reconnect, reportError]);
   const surface =
     !state.current && state.error === null ? null : (
       <View style={styles.surface} testID="pi-workspace-surface">
@@ -146,72 +140,56 @@ function ConnectedVisualHost({ client, agentId }: ConnectedVisualHostProps) {
       </View>
     );
   return (
-    <>
-      <SpeechStop player={player} holder={holder} />
-      {surface}
-    </>
+    <View style={[styles.layout, { flexDirection: layout.direction }]}>
+      <RetainedPanel active={layout.chatVisible} style={VISUAL_CHAT_LAYOUT}>
+        <View style={styles.chrome}>
+          <Button
+            variant="ghost"
+            size="sm"
+            testID="pi-visuals-toggle"
+            disabled={!active || library.status === "loading"}
+            onPress={toggleLibrary}
+          >
+            Drawings{library.items.length ? ` (${library.items.length})` : ""}
+          </Button>
+          {chromeAccessory}
+        </View>
+        {state.error && !library.visible ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {state.error}
+          </Text>
+        ) : null}
+        {library.error && !library.visible ? (
+          <View style={styles.notice}>
+            <Text accessibilityRole="alert" style={styles.error}>
+              {library.error}
+            </Text>
+            <Button variant="ghost" size="sm" onPress={retryLibrary}>
+              Retry library
+            </Button>
+          </View>
+        ) : null}
+        {children}
+      </RetainedPanel>
+      {layout.sidebarVisible ? (
+        <VisualSidebar
+          controller={controller}
+          library={library}
+          current={state.current?.document ?? null}
+          compact={compact}
+        >
+          {surface}
+        </VisualSidebar>
+      ) : null}
+    </View>
   );
-}
-
-const SILENT_CAPTURE_CALLBACKS = {
-  onCaptureData: () => undefined,
-  onVolumeLevel: () => undefined,
-};
-
-function releaseSpeechEngine(engine: AudioEngine): void {
-  engine.clearQueue();
-  engine.stop();
-  // The web engine owns a private AudioContext. The native engine shares the platform audio
-  // session with dictation, so it is only stopped, never torn down.
-  if (Platform.OS === "web")
-    void engine.destroy().catch((error: unknown) => {
-      console.warn("Speech playback engine release failed", error);
-    });
-}
-
-/** The native two-way audio module reports whether it is still writing queued output. */
-interface NativeAudioOutput {
-  isPlaying(): boolean;
-}
-const nativeAudioOutput =
-  Platform.OS === "web" ? null : requireOptionalNativeModule<NativeAudioOutput>("ExpoTwoWayAudio");
-const outputDrained = nativeAudioOutput ? () => !nativeAudioOutput.isPlaying() : undefined;
-
-/**
- * The conversation's shared speech player, attached to this observation. Several panels of one
- * conversation share it, so the stop control appears wherever the conversation is visible.
- */
-function useSpeechPlayer(
-  controller: VisualController,
-  client: DaemonClient,
-  agentId: string,
-): { player: SpeechPlayer; holder: object | null } {
-  const player = useMemo(
-    () =>
-      sharedSpeechPlayer(client, agentId, {
-        createEngine: () =>
-          createAudioEngine(SILENT_CAPTURE_CALLBACKS, { traceLabel: "pi-speech" }),
-        releaseEngine: releaseSpeechEngine,
-        ...(outputDrained ? { outputDrained } : {}),
-      }),
-    [client, agentId],
-  );
-  const [holder, setHolder] = useState<object | null>(null);
-  useEffect(() => {
-    const held = player.hold();
-    setHolder(held.holder);
-    return () => {
-      setHolder(null);
-      held.release();
-    };
-  }, [player]);
-  useEffect(() => controller.attachSpeech(player), [controller, player]);
-  return { player, holder };
 }
 
 const styles = StyleSheet.create((theme) => ({
-  surface: { height: 360, minHeight: 280, width: "100%", backgroundColor: theme.colors.background },
-  notice: { padding: 8, gap: 8 },
+  layout: { flex: 1, minHeight: 0, minWidth: 0, width: "100%" },
+  chrome: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  surface: { flex: 1, minHeight: 280, width: "100%", backgroundColor: theme.colors.background },
+  notice: { padding: theme.spacing[2], gap: theme.spacing[2] },
   error: { color: theme.colors.foreground },
-  pending: { color: theme.colors.foregroundMuted, padding: 8 },
+  pending: { color: theme.colors.foregroundMuted, padding: theme.spacing[2] },
 }));

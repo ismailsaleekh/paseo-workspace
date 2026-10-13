@@ -1796,7 +1796,7 @@ export class VoiceAssistantWebSocketServer {
       desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,
       ...(this.serverCapabilities ? { capabilities: this.serverCapabilities } : {}),
       features: {
-        ...(this.piWorkspace ? { piWorkspace: true } : {}),
+        ...(this.piWorkspace ? { piWorkspace: true, piVisualLibrary: true, piSpeech: true } : {}),
         ...(this.piBackgroundJobs ? { piBackgroundJobs: true } : {}),
         ownedSubscriptions: true,
         agentRequestReceipts: true,

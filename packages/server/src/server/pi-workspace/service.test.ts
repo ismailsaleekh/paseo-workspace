@@ -439,6 +439,9 @@ async function exerciseVisualDocument({
       `http://localhost:${metroPort}/h/${encodeURIComponent(serverId)}/agent/${encodeURIComponent(agent.id)}`,
     );
     await page.getByTestId("message-input-root").waitFor({ state: "visible", timeout: 30_000 });
+    // Drawings live in the sidebar, collapsed by default; a visual renders only while it is open.
+    await page.getByTestId("pi-visuals-toggle").click();
+    await page.getByTestId("pi-visuals-sidebar").waitFor({ state: "visible", timeout: 15_000 });
     const file = join(home.cwd, "interactive.html");
     const html = await readFile(
       resolvePath(packageRoot, "../../qa/pi-workspace/fixtures/interactive.html"),

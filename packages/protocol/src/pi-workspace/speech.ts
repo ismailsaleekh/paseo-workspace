@@ -12,6 +12,13 @@ export const SPEECH_CHUNK_SECONDS = 10;
 /** Bound on one base64 audio payload (10 s of 24 kHz PCM16 is about 640 KiB of base64). */
 export const SPEECH_AUDIO_CHARS = 1024 * 1024;
 export const SPEECH_DURATION_MS_LIMIT = 24 * 60 * 60 * 1000;
+/** The agent's named voices. Michael is the default; the user may call him Mike. */
+export const SpeechVoiceSchema = z.enum(["michael", "adam"]);
+export type SpeechVoice = z.infer<typeof SpeechVoiceSchema>;
+export const DEFAULT_SPEECH_VOICE: SpeechVoice = "michael";
+/** The kind of app that plays speech: the desktop (or web) app or the phone app. */
+export const SpeechDeviceSchema = z.enum(["computer", "phone"]);
+export type SpeechDevice = z.infer<typeof SpeechDeviceSchema>;
 const PCM_FORMAT = /^audio\/pcm;rate=\d{4,6};bits=16$/;
 
 const UtteranceIdSchema = z.string().uuid();

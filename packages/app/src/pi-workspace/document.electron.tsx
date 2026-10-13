@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { getDesktopHost } from "@/desktop/host";
+import { getDesktopHost, type DesktopHostBridge } from "@/desktop/host";
+import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import type {
   DesktopVisualBridge,
   DesktopVisualBoundsUpdate,
@@ -22,6 +23,11 @@ function bounds(element: HTMLDivElement): DesktopVisualBoundsUpdate["bounds"] {
   };
 }
 
+interface DesktopVisualDocumentProps extends VisualDocumentProps {
+  /** Owning host's existing bridge port; defaults to the installed desktop bridge. */
+  desktop?: Pick<DesktopHostBridge, "visuals" | "events"> | null;
+}
+
 export function VisualDocument({
   current,
   restoration,
@@ -31,13 +37,13 @@ export function VisualDocument({
   receive,
   hostEvent,
   reportError,
-}: VisualDocumentProps) {
+  desktop = getDesktopHost(),
+}: DesktopVisualDocumentProps) {
   const surface = useRef<HTMLDivElement>(null);
   const [bridge, setBridge] = useState<DesktopVisualBridge | null>(null);
   const nonce = current.binding.nonce;
   useEffect(() => {
     const element = surface.current;
-    const desktop = getDesktopHost();
     if (!element || !desktop?.visuals || !desktop.events?.on) {
       reportError(new Error("Update the desktop app to display isolated Pi visuals"));
       return;
@@ -47,14 +53,18 @@ export function VisualDocument({
     const target = element;
     let stopped = false;
     let mounted = false;
+    let mountRequested = false;
     let unsubscribe: (() => void) | null = null;
     const failure = (error: unknown) => {
       if (!stopped) reportError(error);
     };
     const resize = () => {
       if (stopped || !mounted) return;
-      void visuals.bounds({ nonce, bounds: bounds(target) }).catch(failure);
+      void visuals
+        .bounds({ nonce, bounds: bounds(target), occluded: hasActiveWebOverlay() })
+        .catch(failure);
     };
+    const stopOverlay = subscribeWebOverlayActivity(resize);
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     window.addEventListener("scroll", resize, true);
@@ -80,11 +90,16 @@ export function VisualDocument({
         stopEvents();
         return;
       }
-      await visuals.mount({ current, commandId: renderCommandId, bounds: bounds(target) });
-      if (stopped) {
-        await visuals.dispose({ nonce });
-        return;
-      }
+      mountRequested = true;
+      await visuals.mount({
+        current,
+        commandId: renderCommandId,
+        bounds: bounds(target),
+        occluded: hasActiveWebOverlay(),
+      });
+      // Cleanup already cancelled/disposed this invocation before any replacement effect mounted.
+      // An old successful reply must not issue another same-nonce disposal against that replacement.
+      if (stopped) return;
       mounted = true;
       resize();
       setBridge(visuals);
@@ -92,13 +107,14 @@ export function VisualDocument({
     void mount().catch(failure);
     return () => {
       stopped = true;
+      stopOverlay();
       observer.disconnect();
       window.removeEventListener("scroll", resize, true);
       window.removeEventListener("resize", resize);
       if (unsubscribe) unsubscribe();
-      void visuals.dispose({ nonce }).catch(reportError);
+      if (mountRequested) void visuals.dispose({ nonce }).catch(reportError);
     };
-  }, [current, renderCommandId, nonce, receive, hostEvent, reportError]);
+  }, [current, renderCommandId, nonce, receive, hostEvent, reportError, desktop]);
   useEffect(() => {
     if (!bridge || !restoration) return;
     void bridge

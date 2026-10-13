@@ -52,6 +52,20 @@ interface BrowserKeyboardHostContents extends BrowserKeyboardContentsIdentity {
   send(channel: string, ...args: unknown[]): void;
 }
 
+interface TrustedNativeKeyboardContents {
+  isDestroyed(): boolean;
+  isFocused(): boolean;
+  setIgnoreMenuShortcuts(ignore: boolean): void;
+}
+interface TrustedNativeKeyboardInput {
+  contents: TrustedNativeKeyboardContents;
+  hostContents: BrowserKeyboardHostContents;
+  /** Keyboard correlation only; this does not register a browser or automation target. */
+  sourceId: string;
+  event: BrowserKeyboardInputEvent;
+  input: Electron.Input;
+}
+
 interface BrowserKeyboardGuest {
   contents: BrowserKeyboardGuestContents;
   hostContents: BrowserKeyboardHostContents;
@@ -157,6 +171,52 @@ export class BrowserKeyboard {
       return;
     }
     guest.hostContents.send(SHORTCUT_OUTPUT_CHANNEL, input);
+  }
+
+  /** Main-process only. Call from a currently owned guest's native before-input-event, never IPC. */
+  public handleTrustedNativeInput({
+    contents,
+    hostContents,
+    sourceId,
+    event,
+    input,
+  }: TrustedNativeKeyboardInput): boolean {
+    if (contents.isDestroyed() || hostContents.isDestroyed() || !contents.isFocused()) return false;
+    if (input.type !== "keyDown" || input.isComposing || input.key === "Process") return false;
+    const policy = this.policiesByHostWebContentsId.get(hostContents.id);
+    const matchInput = {
+      alt: input.alt,
+      code: input.code,
+      control: input.control,
+      key: input.key,
+      meta: input.meta,
+      repeat: input.isAutoRepeat,
+      shift: input.shift,
+      // A generated document can contain text fields. Forward only chords the host policy permits
+      // while editing; leave field-only keys and editing-disabled bindings inside the secure guest.
+      editable: true,
+    };
+    const hasModifier = input.alt || input.control || input.meta;
+    const forwarded =
+      hasModifier && policy !== undefined && matchesBrowserShortcutPolicy(policy, matchInput);
+    const menuOwned =
+      hasModifier &&
+      policy !== undefined &&
+      matchesBrowserShortcutPrefixes(policy.menuPrefixes, matchInput);
+    contents.setIgnoreMenuShortcuts((!input.control && !input.meta) || forwarded || menuOwned);
+    if (!forwarded) return false;
+    event.preventDefault();
+    hostContents.send(SHORTCUT_OUTPUT_CHANNEL, {
+      browserId: sourceId,
+      alt: input.alt,
+      code: input.code,
+      control: input.control,
+      key: input.key,
+      meta: input.meta,
+      repeat: input.isAutoRepeat,
+      shift: input.shift,
+    });
+    return true;
   }
 
   public detachHost(hostWebContentsId: number): void {

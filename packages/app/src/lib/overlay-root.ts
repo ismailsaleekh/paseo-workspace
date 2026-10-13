@@ -91,6 +91,16 @@ interface WebOverlayEntry {
 }
 
 const webOverlayEntries: WebOverlayEntry[] = [];
+const webOverlayActivityListeners = new Set<() => void>();
+export function subscribeWebOverlayActivity(listener: () => void): () => void {
+  webOverlayActivityListeners.add(listener);
+  return () => {
+    webOverlayActivityListeners.delete(listener);
+  };
+}
+function notifyWebOverlayActivity(): void {
+  for (const listener of webOverlayActivityListeners) listener();
+}
 let webOverlayOrder = 0;
 let webOverlayListenersAttached = false;
 let webOverlayFocusCheckQueued = false;
@@ -210,6 +220,7 @@ function detachWebOverlayListeners(): void {
 
 function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptions) => void {
   webOverlayEntries.push(entry);
+  notifyWebOverlayActivity();
   attachWebOverlayListeners();
 
   const focusFrame = window.requestAnimationFrame(() => {
@@ -222,7 +233,10 @@ function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptio
   return (options) => {
     window.cancelAnimationFrame(focusFrame);
     const index = webOverlayEntries.findIndex((candidate) => candidate.id === entry.id);
-    if (index !== -1) webOverlayEntries.splice(index, 1);
+    if (index !== -1) {
+      webOverlayEntries.splice(index, 1);
+      notifyWebOverlayActivity();
+    }
     detachWebOverlayListeners();
     if (
       options?.restoreFocus !== false &&

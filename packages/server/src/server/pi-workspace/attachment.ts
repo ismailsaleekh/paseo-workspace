@@ -18,6 +18,8 @@ import {
 import {
   SPEECH_OPERATION_TIMEOUT_MS,
   type SpeechResult,
+  type SpeechDevice,
+  type SpeechVoice,
 } from "@getpaseo/protocol/pi-workspace/speech";
 
 export interface VisualRuntimeLease {
@@ -28,6 +30,8 @@ export interface VisualRuntimeLease {
 export interface VisualSpeakRequest {
   utterance: string;
   text: string;
+  voice?: SpeechVoice;
+  device?: SpeechDevice;
 }
 export interface VisualAttachmentHost {
   execute(
@@ -270,7 +274,12 @@ export class VisualAttachmentBridge {
           } else if (frame.kind === "cancel") {
             peer.pending.get(frame.requestId)?.abort();
           } else if (frame.kind === "speak") {
-            const request = { utterance: frame.utterance, text: frame.text };
+            const request = {
+              utterance: frame.utterance,
+              text: frame.text,
+              voice: frame.voice,
+              device: frame.device,
+            };
             this.begin(
               peer,
               frame.requestId,

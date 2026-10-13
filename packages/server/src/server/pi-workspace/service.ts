@@ -28,17 +28,25 @@ import type {
   VisualView,
   VisualClientReceipt,
   VisualHostSignal,
+  VisualLibraryOperation,
+  VisualLibraryResult,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { VisualStorage } from "./storage.js";
+import { encodeVisualView } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import {
+  DEFAULT_SPEECH_VOICE,
   parseSpeechReceipt,
   speechEvent,
+  type SpeechDevice,
+  type SpeechEvent,
+  type SpeechPlayback,
   type SpeechReceipt,
   type SpeechResult,
+  type SpeechVoice,
 } from "@getpaseo/protocol/pi-workspace/speech";
 import { PRESENCE_THRESHOLD_MS, type ClientPresenceState } from "../agent-attention-policy.js";
 import type { TextToSpeechProvider } from "../speech/speech-provider.js";
-import { SpeechUtterances } from "./speech.js";
+import { SPEECH_VOICE_SPEAKERS, SpeechUtterances } from "./speech.js";
 
 /** A display must acknowledge within this budget; the agent tool allows the operation 2 s more. */
 const DISPLAY_DEADLINE_MS = VISUAL_OPERATION_TIMEOUT_MS - 2000;
@@ -66,6 +74,11 @@ interface PendingCommand {
 }
 interface VisualPeer {
   agentId: string;
+  owner: VisualOwner | null;
+  library: boolean;
+  drawingVisible: boolean;
+  historical: boolean;
+  selectionIntent: number;
   source: object;
   generation: string;
   platform: VisualPlatform;
@@ -130,8 +143,16 @@ interface Conversation {
   owner: VisualOwner;
   currentId: string | null;
 }
+interface VisualLibraryInput {
+  owner: VisualOwner;
+  source: object;
+  generation: string;
+  operation: VisualLibraryOperation;
+}
 export interface ObserveVisualInput {
   agentId: string;
+  owner?: VisualOwner | null;
+  library?: boolean;
   source: object;
   platform?: VisualPlatform;
   emit(event: VisualEvent): void;
@@ -153,6 +174,40 @@ export interface VisualSpeechHost {
 export interface SpeakVisualInput {
   utterance: string;
   text: string;
+  voice?: SpeechVoice;
+  /** The device the user asked for; absent plays where the user is talking from. */
+  device?: SpeechDevice;
+}
+/** An app connection that plays the agent speech of every conversation. */
+export interface ObserveSpeechInput {
+  source: object;
+  /** The app installation's stable client ID. */
+  clientId: string;
+  device: SpeechDevice;
+  /** The app keeps playing while hidden (desktop apps always do). */
+  background: boolean;
+  presence(): ClientPresenceState | null;
+  emit(agentId: string, voice: SpeechVoice, speech: SpeechEvent): void;
+}
+export interface SpeechObservation {
+  generation: string;
+  release(): void;
+}
+interface SpeechClient extends Omit<ObserveSpeechInput, "source"> {
+  source: object;
+  generation: string;
+  mountOrder: number;
+  active: boolean;
+  receipts: number;
+}
+/** A playback client able to take the next utterance. */
+interface SpeechCandidate {
+  generation: string;
+  clientId: string | null;
+  device: SpeechDevice;
+  playable: boolean;
+  rank: number[];
+  send(agentId: string, voice: SpeechVoice, playback: SpeechPlayback): void;
 }
 
 function isSpeechReceipt(receipt: VisualClientReceipt): receipt is SpeechReceipt {
@@ -183,15 +238,19 @@ function waitForSpeechTurn(
  * Presence rank of a display that shows the conversation: focused on the agent, then recent
  * activity, then the latest mount. Activity age only ranks; an idle operator still hears speech.
  */
-function speechRank(peer: VisualPeer, agentId: string, now: number): number[] {
-  const presence = peer.presence();
+function speechRank(
+  presence: ClientPresenceState | null,
+  mountOrder: number,
+  agentId: string,
+  now: number,
+): number[] {
   const reported = presence ? presence.lastActivityAtMs : null;
   const activity = reported === null ? null : Math.min(reported, now);
   const present = activity !== null && now - activity <= PRESENCE_THRESHOLD_MS;
   return [
     presence?.focusedAgentId === agentId ? 1 : 0,
     present && activity !== null ? activity : Number.NEGATIVE_INFINITY,
-    peer.mountOrder,
+    mountOrder,
   ];
 }
 function outranks(left: number[], right: number[]): boolean {
@@ -235,7 +294,13 @@ export class VisualService {
   private readonly validator = new Ajv({ strict: true, allErrors: false, validateFormats: false });
   private speechHost: VisualSpeechHost | null = null;
   private readonly utterances: SpeechUtterances;
-  private readonly speechTails = new Map<string, Promise<void>>();
+  /** One voice at a time: utterances of every conversation play in order. */
+  private speechTail: Promise<void> = Promise.resolve();
+  private readonly speechClients = new Map<string, SpeechClient>();
+  /** Conversations whose speech the user stopped, until the user's next message. */
+  private readonly stoppedSpeech = new Set<string>();
+  /** The app client the user last messaged each conversation from. */
+  private readonly lastUserClient = new Map<string, string>();
 
   constructor(
     private readonly storage: VisualStorage,
@@ -252,9 +317,13 @@ export class VisualService {
   private conversation(owner: VisualOwner): Conversation {
     const previous = this.activeOwners.get(owner.agentId);
     if (previous && previous.sessionId !== owner.sessionId) {
-      for (const peer of this.agentPeers(owner.agentId)) this.restore(peer, null);
+      for (const peer of this.agentPeers(owner.agentId)) {
+        peer.owner = owner;
+        this.restore(peer, null);
+      }
     }
     this.activeOwners.set(owner.agentId, owner);
+    for (const peer of this.agentPeers(owner.agentId)) peer.owner = owner;
     const key = conversationKey(owner);
     const existing = this.conversations.get(key);
     if (existing) return existing;
@@ -268,6 +337,11 @@ export class VisualService {
       throw new VisualFailure("BUSY", "Visual display limit reached");
     const peer: VisualPeer = {
       agentId: input.agentId,
+      owner: input.owner ?? null,
+      library: input.library === true,
+      drawingVisible: input.library !== true,
+      historical: false,
+      selectionIntent: 0,
       source: input.source,
       generation: randomUUID(),
       // COMPAT(visualPlatform): added in v0.10.3; remove after 2027-04-04 once
@@ -291,6 +365,7 @@ export class VisualService {
     };
     this.peers.set(peer.generation, peer);
     try {
+      if (input.owner) this.conversation(input.owner);
       const owner = this.activeOwners.get(input.agentId);
       const conversation = owner ? this.conversations.get(conversationKey(owner)) : undefined;
       if (conversation?.currentId) {
@@ -315,8 +390,109 @@ export class VisualService {
     }
   }
 
+  private libraryPeer(input: VisualLibraryInput): VisualPeer {
+    const peer = this.peers.get(input.generation);
+    if (
+      !peer ||
+      !peer.active ||
+      !peer.library ||
+      peer.source !== input.source ||
+      peer.agentId !== input.owner.agentId
+    )
+      throw new VisualFailure("STALE_CLIENT", "Library request does not own this physical display");
+    return peer;
+  }
+
+  private checkLibraryConversation(peer: VisualPeer, input: VisualLibraryInput): void {
+    if (
+      !peer.active ||
+      this.peers.get(input.generation) !== peer ||
+      (peer.owner && conversationKey(peer.owner) !== conversationKey(input.owner))
+    )
+      throw new VisualFailure("STALE_SESSION", "Library conversation changed");
+    const previous = this.activeOwners.get(input.owner.agentId);
+    if (previous && conversationKey(previous) !== conversationKey(input.owner))
+      throw new VisualFailure(
+        "STALE_SESSION",
+        "Stored Pi conversation does not own the active display",
+      );
+  }
+
+  async library(input: VisualLibraryInput): Promise<VisualLibraryResult> {
+    const peer = this.libraryPeer(input);
+    const check = () => this.checkLibraryConversation(peer, input);
+    check();
+    const operation = input.operation;
+    const selecting = operation.kind === "select" || operation.kind === "visibility";
+    const intent = selecting ? (operation.intent ?? peer.selectionIntent + 1) : null;
+    if (intent !== null) {
+      if (!Number.isSafeInteger(intent) || intent <= peer.selectionIntent)
+        throw new VisualFailure("STALE_SELECTION", "Library choice has been superseded");
+      peer.selectionIntent = intent;
+    }
+    const checkIntent = () => {
+      check();
+      if (intent !== null && intent !== peer.selectionIntent)
+        throw new VisualFailure("STALE_SELECTION", "Library choice has been superseded");
+    };
+    await peer.tail;
+    checkIntent();
+    this.conversation(input.owner);
+    if (operation.kind === "list") {
+      const page = await this.storage.list({
+        owner: input.owner,
+        ...(operation.cursor === undefined ? {} : { cursor: operation.cursor }),
+      });
+      check();
+      return { kind: "list", ...page };
+    }
+    if (operation.kind === "versions") {
+      const page = await this.storage.listVersions({
+        owner: input.owner,
+        id: operation.id,
+        ...(operation.cursor === undefined ? {} : { cursor: operation.cursor }),
+      });
+      check();
+      return { kind: "versions", ...page };
+    }
+    if (operation.kind === "select") {
+      const document =
+        operation.revision === null
+          ? await this.storage.get({ owner: input.owner, id: operation.id })
+          : await this.storage.getVersion({
+              owner: input.owner,
+              id: operation.id,
+              revision: operation.revision,
+            });
+      checkIntent();
+      this.restore(peer, document);
+      peer.historical = document.historyState !== undefined;
+      this.conversation(input.owner).currentId = document.id;
+    } else {
+      if (operation.visible && peer.current) {
+        const document = peer.historical
+          ? peer.current.document
+          : await this.storage.get({ owner: input.owner, id: peer.current.document.id });
+        checkIntent();
+        this.restore(peer, document);
+      }
+      checkIntent();
+      peer.drawingVisible = operation.visible;
+      if (!operation.visible) {
+        for (const pending of peer.pending.values()) {
+          pending.cleanup();
+          pending.reject(new VisualFailure("DISPLAY_UNAVAILABLE", "Drawing sidebar was closed"));
+        }
+        peer.pending.clear();
+        peer.status = "stored";
+      }
+    }
+    return { kind: "view", view: encodeVisualView(this.view(peer)) };
+  }
+
   close(): void {
     for (const peer of this.peers.values()) this.release(peer);
+    for (const client of this.speechClients.values()) this.releaseSpeechClient(client);
     this.utterances.close();
   }
 
@@ -344,7 +520,7 @@ export class VisualService {
   private latestPeer(agentId: string, id?: string): VisualPeer | undefined {
     let latest: VisualPeer | undefined;
     for (const peer of this.agentPeers(agentId)) {
-      if (!peer.visible) continue;
+      if (!peer.visible || !peer.drawingVisible) continue;
       if (id !== undefined && peer.current?.document.id !== id) continue;
       if (!latest || peer.mountOrder > latest.mountOrder) latest = peer;
     }
@@ -354,7 +530,7 @@ export class VisualService {
   private synchronize(owner: VisualOwner, document: VisualDocument): void {
     for (const peer of this.agentPeers(owner.agentId)) {
       const current = peer.current;
-      if (!current || current.document.id !== document.id) continue;
+      if (!current || peer.historical || current.document.id !== document.id) continue;
       if (current.document.revision !== document.revision) continue;
       peer.current = { binding: current.binding, document };
       if (peer.error?.code === "DOCUMENT_UNRESPONSIVE") continue;
@@ -364,7 +540,14 @@ export class VisualService {
   }
 
   private view(peer: VisualPeer): VisualView {
-    return { generation: peer.generation, sequence: peer.sequence, current: peer.current };
+    return {
+      generation: peer.generation,
+      sequence: peer.sequence,
+      current: peer.current,
+      ...(peer.library
+        ? { sessionId: peer.owner?.sessionId ?? null, selectionIntent: peer.selectionIntent }
+        : {}),
+    };
   }
 
   private boundDocument(peer: VisualPeer, document: VisualDocument): VisualRenderDocument {
@@ -389,6 +572,7 @@ export class VisualService {
     peer.pending.clear();
     peer.current = document ? this.boundDocument(peer, document) : null;
     peer.documentSequence = 0;
+    peer.historical = document?.historyState !== undefined;
     peer.actions = {};
     peer.status = "stored";
     peer.error = null;
@@ -397,7 +581,11 @@ export class VisualService {
   }
 
   private requirePeer(owner: VisualOwner, id: string): VisualPeer {
-    const peer = this.latestPeer(owner.agentId);
+    const peer =
+      this.latestPeer(owner.agentId) ??
+      this.agentPeers(owner.agentId).findLast(
+        (candidate) => candidate.library && candidate.visible,
+      );
     if (!peer)
       throw new VisualFailure(
         "CLIENT_UNAVAILABLE",
@@ -414,6 +602,7 @@ export class VisualService {
         addressed &&
         addressed.active &&
         addressed.visible &&
+        addressed.drawingVisible &&
         addressed.agentId === owner.agentId &&
         addressed.current?.document.id === id;
       if (!available)
@@ -449,14 +638,22 @@ export class VisualService {
         kind: "list",
         items: page.items.map((item) => ({
           ...item,
-          status: peer?.current?.document.id === item.id ? peer.status : "stored",
+          status:
+            peer?.current?.document.id === item.id &&
+            peer.current.document.revision === item.revision
+              ? peer.status
+              : "stored",
         })),
         nextCursor: page.nextCursor,
       };
     }
     if (operation.kind === "context") {
       if (!conversation.currentId) return { kind: "context", visual: null };
-      return { kind: "context", visual: await this.record(owner, conversation.currentId) };
+      const displayed = this.latestPeer(owner.agentId, conversation.currentId);
+      return {
+        kind: "context",
+        visual: await this.record(owner, conversation.currentId, displayed?.generation),
+      };
     }
     const key = conversationKey(owner);
     if (this.busy.has(key))
@@ -511,10 +708,41 @@ export class VisualService {
     }
   }
 
+  /** Registers an app connection that plays agent speech whatever the app displays. */
+  observeSpeech(input: ObserveSpeechInput): SpeechObservation {
+    if (this.speechClients.size >= 64)
+      throw new VisualFailure("BUSY", "Speech playback client limit reached");
+    const client: SpeechClient = {
+      ...input,
+      generation: randomUUID(),
+      mountOrder: ++this.mountOrder,
+      active: true,
+      receipts: 0,
+    };
+    this.speechClients.set(client.generation, client);
+    return { generation: client.generation, release: () => this.releaseSpeechClient(client) };
+  }
+
+  /** The user messaged a conversation: speech plays where they are and may start again. */
+  noteUserMessage(agentId: string, clientId: string): void {
+    this.stoppedSpeech.delete(agentId);
+    // Only an app that plays speech is a destination; a message from elsewhere leaves none.
+    const plays = [...this.speechClients.values()].some((client) => client.clientId === clientId);
+    if (plays) this.lastUserClient.set(agentId, clientId);
+    else this.lastUserClient.delete(agentId);
+  }
+
+  private releaseSpeechClient(client: SpeechClient): void {
+    if (!client.active) return;
+    client.active = false;
+    this.speechClients.delete(client.generation);
+    this.utterances.release(client.generation);
+  }
+
   /**
-   * Speaks one utterance on exactly one client: among the visible displays of this conversation
-   * that announced speech playback, the one ranked first by the connection's heartbeat presence.
-   * Utterances of one conversation play in order; visual operations are never blocked by speech.
+   * Speaks one utterance on exactly one client, chosen when its turn starts and kept until it
+   * ends: the requested device, else the app the user last messaged from, else the best-ranked
+   * playing app. A user stop ends the conversation's speech until the user's next message.
    */
   async speak(
     owner: VisualOwner,
@@ -524,23 +752,25 @@ export class VisualService {
     if (signal.aborted)
       throw new VisualFailure("CANCELLED", "Speech was cancelled", request.utterance);
     this.conversation(owner);
-    const previous = this.speechTails.get(owner.agentId) ?? Promise.resolve();
+    const previous = this.speechTail;
     let releaseTurn: () => void = () => {
       throw new Error("Speech turn was not initialized");
     };
-    const tail = new Promise<void>((resolve) => {
+    const turn = new Promise<void>((resolve) => {
       releaseTurn = resolve;
     });
-    this.speechTails.set(owner.agentId, tail);
+    // A cancelled queued utterance leaves the queue without letting later ones overtake.
+    const tail = previous.then(() => turn);
+    this.speechTail = tail;
     try {
       await waitForSpeechTurn(previous, signal, request.utterance);
-      const peer = this.speechPeer(owner.agentId);
-      if (!peer)
+      if (this.stoppedSpeech.has(owner.agentId))
         throw new VisualFailure(
-          "CLIENT_UNAVAILABLE",
-          "No app with speech playback is displaying this conversation",
+          "SPEECH_STOPPED",
+          "The user stopped speech playback; do not speak again until they ask",
           request.utterance,
         );
+      const target = this.speechTarget(owner.agentId, request);
       const tts = this.speechHost?.resolveTts() ?? null;
       if (!tts)
         throw new VisualFailure(
@@ -548,55 +778,133 @@ export class VisualService {
           "No local text-to-speech engine is available on this host",
           request.utterance,
         );
-      return await this.utterances.speak({
+      const voice = request.voice ?? DEFAULT_SPEECH_VOICE;
+      const result = await this.utterances.speak({
         utterance: request.utterance,
         text: request.text,
         tts,
         signal,
+        speakerId: SPEECH_VOICE_SPEAKERS[voice],
         target: {
-          client: peer.generation,
-          send: (playback) => {
-            if (!peer.active)
-              throw new VisualFailure(
-                "CLIENT_DISCONNECTED",
-                "The playback client disconnected",
-                request.utterance,
-              );
-            peer.emit({ kind: "speech", speech: speechEvent(playback) });
-          },
+          client: target.generation,
+          send: (playback) => target.send(owner.agentId, voice, playback),
         },
       });
+      if (result.status === "stopped") this.stoppedSpeech.add(owner.agentId);
+      return result;
     } finally {
       releaseTurn();
-      if (this.speechTails.get(owner.agentId) === tail) this.speechTails.delete(owner.agentId);
     }
   }
 
-  private speechPeer(agentId: string): VisualPeer | undefined {
+  private speechTarget(agentId: string, request: SpeakVisualInput): SpeechCandidate {
+    const candidates = this.speechCandidates(agentId);
+    const lastUser = request.device === undefined ? this.lastUserClient.get(agentId) : undefined;
+    if (lastUser !== undefined) {
+      // Speech plays where the user talks from and never silently moves to another device.
+      const intended = candidates.find((candidate) => candidate.clientId === lastUser);
+      if (!intended?.playable)
+        throw new VisualFailure(
+          "DEVICE_UNAVAILABLE",
+          intended
+            ? `Paseo on the user's ${intended.device} is in the background and cannot play speech; ask the user to open it or to name another device`
+            : "The app the user is talking from is no longer connected; ask the user to open it or to name another device",
+          request.utterance,
+        );
+      return intended;
+    }
+    let best: SpeechCandidate | undefined;
+    for (const candidate of candidates) {
+      if (!candidate.playable) continue;
+      if (request.device !== undefined && candidate.device !== request.device) continue;
+      if (!best || outranks(candidate.rank, best.rank)) best = candidate;
+    }
+    if (best) return best;
+    if (request.device !== undefined)
+      throw new VisualFailure(
+        "DEVICE_UNAVAILABLE",
+        `No Paseo app on the user's ${request.device} can play speech now`,
+        request.utterance,
+      );
+    throw new VisualFailure(
+      "CLIENT_UNAVAILABLE",
+      "No app with speech playback is displaying this conversation",
+      request.utterance,
+    );
+  }
+
+  private speechCandidates(agentId: string): SpeechCandidate[] {
     const now = Date.now();
-    let best: VisualPeer | undefined;
-    let bestRank: number[] = [];
+    const candidates: SpeechCandidate[] = [];
+    for (const client of this.speechClients.values()) {
+      const presence = client.presence();
+      candidates.push({
+        generation: client.generation,
+        clientId: client.clientId,
+        device: client.device,
+        playable:
+          client.device === "computer" || client.background || presence?.appVisible !== false,
+        rank: speechRank(presence, client.mountOrder, agentId, now),
+        send: (owner, voice, playback) => {
+          if (!client.active)
+            throw new VisualFailure(
+              "CLIENT_DISCONNECTED",
+              "The playback client disconnected",
+              playback.utterance,
+            );
+          client.emit(owner, voice, speechEvent(playback));
+        },
+      });
+    }
+    // COMPAT(piSpeech): apps before v0.10.4 play speech in a displayed conversation only.
     for (const peer of this.agentPeers(agentId)) {
       if (!peer.speech || !peer.visible) continue;
-      // A hidden app (for example a backgrounded Android app) does not display the conversation.
-      if (peer.presence()?.appVisible === false) continue;
-      const rank = speechRank(peer, agentId, now);
-      if (!best || outranks(rank, bestRank)) {
-        best = peer;
-        bestRank = rank;
-      }
+      const presence = peer.presence();
+      candidates.push({
+        generation: peer.generation,
+        clientId: null,
+        device: peer.platform === "android" || peer.platform === "ios" ? "phone" : "computer",
+        // A hidden app (for example a backgrounded Android app) does not display the conversation.
+        playable: presence?.appVisible !== false,
+        rank: speechRank(presence, peer.mountOrder, agentId, now),
+        send: (_owner, _voice, playback) => {
+          if (!peer.active)
+            throw new VisualFailure(
+              "CLIENT_DISCONNECTED",
+              "The playback client disconnected",
+              playback.utterance,
+            );
+          peer.emit({ kind: "speech", speech: speechEvent(playback) });
+        },
+      });
     }
-    return best;
+    return candidates;
   }
 
   private receiveSpeech(input: ReceiveVisualInput, receipt: SpeechReceipt): number {
+    const signal = parseSpeechReceipt(receipt);
+    const client = this.speechClients.get(receipt.clientGeneration);
+    if (client) {
+      if (!client.active || client.source !== input.source)
+        throw new VisualFailure(
+          "STALE_CLIENT",
+          "Speech receipt does not belong to this authenticated connection",
+        );
+      if (!signal)
+        throw new VisualFailure(
+          "INVALID_SPEECH_REPORT",
+          "Speech receipt fields do not match its type",
+        );
+      if (signal.type !== "ready") this.utterances.receive(client.generation, signal);
+      client.receipts += 1;
+      return client.receipts;
+    }
     const peer = this.peers.get(receipt.clientGeneration);
     if (!peer?.active || peer.agentId !== input.agentId || peer.source !== input.source)
       throw new VisualFailure(
         "STALE_CLIENT",
         "Speech receipt does not belong to this authenticated connection",
       );
-    const signal = parseSpeechReceipt(receipt);
     if (!signal)
       throw new VisualFailure(
         "INVALID_SPEECH_REPORT",
@@ -715,10 +1023,31 @@ export class VisualService {
       const retained =
         error instanceof VisualFailure &&
         (error.code === "DOCUMENT_UNRESPONSIVE" || error.code === "STALE_STATE");
-      if (!retained) this.restore(target, await this.storage.get({ owner, id: operation.id }));
+      if (!retained && !target.historical)
+        this.restore(target, await this.storage.get({ owner, id: operation.id }));
       throw error;
     }
-    return this.record(owner, operation.id);
+    return this.record(owner, operation.id, target.generation);
+  }
+
+  private requireRestorationDisplay(
+    peer: VisualPeer,
+    document: VisualDocument,
+    previousRevision: number,
+  ): void {
+    const latestView = peer.current?.document;
+    if (
+      peer.library &&
+      (!peer.drawingVisible ||
+        peer.historical ||
+        latestView?.id !== document.id ||
+        latestView.revision !== previousRevision)
+    )
+      throw new VisualFailure(
+        "NOT_DISPLAYED",
+        "Open this drawing's Latest view before replacing its source; restoration must be verified",
+        document.id,
+      );
   }
 
   private async render(
@@ -737,6 +1066,15 @@ export class VisualService {
       deadline: Date.now() + DISPLAY_DEADLINE_MS,
     };
     const peer = this.requirePeer(owner, document.id);
+    const preserveHistory = peer.historical && peer.current?.document.id === document.id;
+    if (replacement) this.requireRestorationDisplay(peer, document, previousRevision);
+    if (peer.library && (!peer.drawingVisible || preserveHistory)) {
+      if (!preserveHistory) this.restore(peer, document);
+      for (const other of this.agentPeers(owner.agentId)) {
+        if (other !== peer && !other.historical) this.restore(other, document);
+      }
+      return;
+    }
     try {
       await this.renderOn(peer, request, DISPLAY_DEADLINE_MS);
     } catch (error) {
@@ -798,6 +1136,7 @@ export class VisualService {
     const { owner, document, signal, replacement, previousRevision } = request;
     const previous = peer.current?.document ?? null;
     peer.current = this.boundDocument(peer, document);
+    peer.historical = false;
     peer.documentSequence = 0;
     peer.status = "stored";
     peer.actions = {};
@@ -839,7 +1178,7 @@ export class VisualService {
       peer.mountOrder = ++this.mountOrder;
       this.synchronize(owner, updated);
       for (const other of this.agentPeers(owner.agentId)) {
-        if (other !== peer) this.restore(other, updated);
+        if (other !== peer && !other.historical) this.restore(other, updated);
       }
     } catch (error) {
       this.restore(peer, previous);
@@ -903,7 +1242,7 @@ export class VisualService {
         "Visual receipt does not belong to this authenticated connection",
       );
     if ("kind" in receipt) return this.receiveHostSignal(peer, receipt);
-    if (!peer.visible)
+    if (!peer.visible || !peer.drawingVisible)
       throw new VisualFailure(
         "DISPLAY_UNAVAILABLE",
         "Hidden display cannot publish visual state",
@@ -1014,12 +1353,50 @@ export class VisualService {
     }
   }
 
+  private publishHistoricalReceipt(
+    { peer, receipt }: ReceiptValidationInput,
+    { current, snapshot, actions }: ValidatedVisualReceipt,
+  ): number {
+    const base = receipt.stateRevision ?? current.document.stateRevision;
+    const unchanged = isDeepStrictEqual(current.document.snapshot, snapshot);
+    if (receipt.capture) {
+      if (receipt.capture.screenshot.stateRevision !== current.document.stateRevision || !unchanged)
+        throw new VisualFailure(
+          "STALE_STATE",
+          "Historical capture no longer matches the displayed choices",
+        );
+    } else if (base !== current.document.stateRevision) {
+      throw new VisualFailure(
+        "STALE_STATE",
+        "Historical interaction was published from an obsolete base",
+      );
+    }
+    const stateRevision = unchanged
+      ? current.document.stateRevision
+      : current.document.stateRevision + 1;
+    if (!Number.isSafeInteger(stateRevision))
+      throw new VisualFailure("INVALID_DATA", "Historical interaction revision limit reached");
+    peer.current = {
+      binding: current.binding,
+      document: { ...current.document, stateRevision, snapshot },
+    };
+    peer.actions = actions;
+    peer.status = "rendered";
+    peer.error = null;
+    return stateRevision;
+  }
+
   private async publishReceipt(
     { peer, receipt }: ReceiptValidationInput,
     { current, snapshot, actions, pending }: ValidatedVisualReceipt,
   ): Promise<number> {
     const owner = this.activeOwners.get(peer.agentId);
     if (!owner) throw new VisualFailure("STALE_SESSION", "No Pi session owns this visual");
+    if (peer.historical)
+      return this.publishHistoricalReceipt(
+        { peer, receipt },
+        { current, snapshot, actions, pending },
+      );
     if (receipt.capture) {
       const stored = await this.storage.get({ owner, id: current.document.id });
       if (
@@ -1096,6 +1473,11 @@ export class VisualService {
     const owner = this.activeOwners.get(peer.agentId);
     const current = peer.current;
     if (owner && current && sameBinding(current.binding, receipt.binding)) {
+      if (peer.historical) {
+        peer.sequence += 1;
+        peer.emit({ kind: "snapshot", view: this.view(peer) });
+        return;
+      }
       const stored = await this.storage.get({ owner, id: current.document.id });
       this.synchronize(owner, stored);
     }
@@ -1157,15 +1539,23 @@ export class VisualService {
   }
 
   private async record(owner: VisualOwner, id: string, client?: string): Promise<VisualRecord> {
-    const document = await this.storage.get({ owner, id });
+    const latest = await this.storage.get({ owner, id });
     const active = this.latestPeer(owner.agentId, id);
+    const collapsed = this.agentPeers(owner.agentId).find(
+      (candidate) => candidate.library && candidate.current?.document.id === id,
+    );
     const peer = client === undefined ? active : this.displayedPeer(owner, id, client);
     const current = peer?.current;
+    const document =
+      client !== undefined && peer?.historical && current ? current.document : latest;
     const live =
       peer &&
       current &&
       current.document.id === id &&
       current.document.revision === document.revision;
+    let status: VisualRecord["status"] = "disconnected";
+    if (live) status = peer.status;
+    else if (collapsed) status = "stored";
     return {
       kind: "visual",
       id,
@@ -1174,12 +1564,15 @@ export class VisualService {
       stateRevision: document.stateRevision,
       state: document.snapshot.state,
       selection: document.snapshot.selection,
-      status: live ? peer.status : "disconnected",
+      status,
       actions: live ? peer.actions : {},
       error: live ? peer.error : null,
       client: live ? peer.generation : null,
       displays: this.agentPeers(owner.agentId)
-        .filter((display) => display.visible && display.current?.document.id === id)
+        .filter(
+          (display) =>
+            display.visible && display.drawingVisible && display.current?.document.id === id,
+        )
         .map((display) => ({
           client: display.generation,
           platform: display.platform,

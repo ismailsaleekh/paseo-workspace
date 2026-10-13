@@ -7,10 +7,9 @@ import {
   SPEECH_DRAIN_POLL_MS,
   SPEECH_TAIL_MS,
   SpeechPlayer,
-  sharedSpeechPlayer,
   type SpeechReport,
 } from "./speech-player";
-import type { SpeechOrigin } from "./controller";
+import type { SpeechOrigin } from "./speech-player";
 
 const utterance = "2b3c4d5e-1c1a-4a8e-9f3c-6f1f6d2f0a01";
 const next = "3c4d5e6f-1c1a-4a8e-9f3c-6f1f6d2f0a01";
@@ -253,42 +252,21 @@ test("dispose releases the engine without touching capture", () => {
   assert.equal(engine.calls.includes("destroy"), false);
 });
 
-test("several panels share one player: reports go to the delivering observation and only the latest panel shows stop", async () => {
-  const { engine, speech, origin, reports, released } = setup();
+test("one player serves several origins: reports go to the delivering origin, others' resets are ignored", () => {
+  const { speech, origin, reports } = setup();
   const otherReports: SpeechReport[] = [];
   const other: SpeechOrigin = {
     report: (report) => {
       otherReports.push(report);
     },
   };
-  const first = speech.hold();
-  const second = speech.hold();
-  assert.equal(speech.getSnapshot().holder, second.holder, "the latest mounted panel shows stop");
   speech.accept(chunk(0), other);
   assert.equal(speech.getSnapshot().utterance, utterance);
   speech.reset(origin);
-  assert.equal(speech.getSnapshot().utterance, utterance, "another observation's reset is ignored");
+  assert.equal(speech.getSnapshot().utterance, utterance, "another origin's reset is ignored");
   speech.stop();
   assert.deepEqual(otherReports, [{ type: "stopped", utterance, durationMs: 0 }]);
   assert.deepEqual(reports, []);
-  second.release();
-  assert.equal(speech.getSnapshot().holder, first.holder);
-  assert.deepEqual(released, []);
-  first.release();
-  assert.deepEqual(released, [engine], "the last panel releases the engine");
-  assert.equal(speech.getSnapshot().holder, null);
-});
-
-test("the shared player is one per connection and agent", () => {
-  const connection = {};
-  const options = {
-    createEngine: () => new ManualEngine(),
-    releaseEngine: () => undefined,
-  };
-  const a = sharedSpeechPlayer(connection, "agent-a", options);
-  assert.equal(sharedSpeechPlayer(connection, "agent-a", options), a);
-  assert.notEqual(sharedSpeechPlayer(connection, "agent-b", options), a);
-  assert.notEqual(sharedSpeechPlayer({}, "agent-a", options), a);
 });
 
 test("completion waits for the platform output to drain, stops the platform player, then reports", async () => {

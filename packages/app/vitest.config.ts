@@ -29,6 +29,8 @@ export default defineConfig({
       },
       {
         extends: true,
+        // Components rely on the automatic JSX runtime, as in the app bundle.
+        esbuild: { jsx: "automatic" },
         test: {
           name: "browser",
           fileParallelism: false,

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   BrowserWindow,
   IpcMain,
@@ -31,6 +32,8 @@ import {
   type VisualCommand,
   type VisualHostSignal,
 } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
+
+import type { BrowserKeyboard } from "./browser-keyboard/index.js";
 
 export const VISUAL_SCHEME = "paseo-visual";
 const DEADLINE_MS = 6000;
@@ -313,6 +316,9 @@ export function captureDisplayedFrame({
 
 interface DesktopVisualDependencies {
   ipc: IpcMain;
+  /** Default is the same production containment policy; a port can hold preparation before installation. */
+  prepareSession?: typeof installVisualSessionPolicy;
+  keyboard: Pick<BrowserKeyboard, "handleTrustedNativeInput">;
   createSession(partition: string): Session;
   createView(preferences: WebPreferences): WebContentsView;
   preloadPath: string;
@@ -336,12 +342,18 @@ interface Guest {
   announced: number;
   epoch: number;
   visible: boolean;
+  focusAfterOcclusion: boolean;
+}
+
+interface VisualMountReservation {
+  hostId: number;
+  invocation: string;
 }
 
 export class PiWorkspaceVisuals {
   private readonly windows = new Map<number, BrowserWindow>();
   private readonly guests = new Map<string, Guest>();
-  private readonly reservations = new Map<string, number>();
+  private readonly reservations = new Map<string, VisualMountReservation>();
   private captures = 0;
 
   constructor(private readonly dependencies: DesktopVisualDependencies) {
@@ -360,10 +372,21 @@ export class PiWorkspaceVisuals {
         guest.epoch += 1;
         guest.captureAbort?.abort();
       }
+      const occluded = input.occluded === true;
+      if (occluded && guest.input.occluded !== true)
+        guest.focusAfterOcclusion = guest.view.webContents.isFocused();
+      const restoreFocus = !occluded && guest.input.occluded === true && guest.focusAfterOcclusion;
+      guest.input.occluded = occluded;
       guest.input.bounds = input.bounds;
       guest.view.setBounds(input.bounds);
-      guest.view.setVisible(input.bounds.width > 0 && input.bounds.height > 0 && !guest.terminated);
       this.visibility(guest);
+      if (occluded && guest.focusAfterOcclusion) guest.host.webContents.focus();
+      if (restoreFocus) {
+        guest.focusAfterOcclusion = false;
+        // Restore internal first-responder ownership only while the overlay's host still owns it.
+        // WebContents.focus does not activate an inactive window or steal another window's focus.
+        if (guest.visible && guest.host.webContents.isFocused()) guest.view.webContents.focus();
+      }
     });
     ipc.handle("paseo:visual:command", (event, value: unknown) => this.command(event, value));
     ipc.handle("paseo:visual:restore", (event, value: unknown) => {
@@ -399,7 +422,7 @@ export class PiWorkspaceVisuals {
       const host = this.host(event);
       const input = DesktopVisualAddressSchema.parse(value);
       const reserved = this.reservations.get(input.nonce);
-      if (reserved !== undefined && reserved !== host.webContents.id)
+      if (reserved !== undefined && reserved.hostId !== host.webContents.id)
         throw new VisualFailure("UNAUTHORIZED", "Visual belongs to another window");
       this.reservations.delete(input.nonce);
       const guest = this.guests.get(input.nonce);
@@ -496,15 +519,22 @@ export class PiWorkspaceVisuals {
       throw new VisualFailure("BUSY", "Visual document is already mounted");
     if (this.guests.size + this.reservations.size >= 64)
       throw new VisualFailure("BUSY", "Desktop visual guest limit reached");
-    this.reservations.set(nonce, host.webContents.id);
-    const partition = `paseo-visual-${nonce}`;
-    const session = this.dependencies.createSession(partition);
+    const reservation: VisualMountReservation = {
+      hostId: host.webContents.id,
+      invocation: randomUUID(),
+    };
+    this.reservations.set(nonce, reservation);
+    // A cancelled invocation cannot finish configuring the replacement invocation's session.
+    const partition = `paseo-visual-${nonce}-${reservation.invocation}`;
     const documentUrl = `${VISUAL_SCHEME}://${nonce}/document`;
+    let invocationGuest: Guest | null = null;
     try {
-      await installVisualSessionPolicy(session, documentUrl);
+      const session = this.dependencies.createSession(partition);
+      const prepare = this.dependencies.prepareSession ?? installVisualSessionPolicy;
+      await prepare(session, documentUrl);
       if (
         host.isDestroyed() ||
-        this.reservations.get(nonce) !== host.webContents.id ||
+        this.reservations.get(nonce) !== reservation ||
         event.senderFrame !== host.webContents.mainFrame
       )
         throw new VisualFailure("CANCELLED", "Visual was unmounted while preparing its session");
@@ -548,7 +578,9 @@ export class PiWorkspaceVisuals {
         announced: input.current.document.stateRevision,
         epoch: 0,
         visible: true,
+        focusAfterOcclusion: false,
       };
+      invocationGuest = guest;
       this.guests.set(nonce, guest);
       installVisualContentsPolicy(view.webContents);
       host.contentView.addChildView(view);
@@ -560,11 +592,11 @@ export class PiWorkspaceVisuals {
         .loadURL(documentUrl)
         .catch((error: unknown) => this.fail(guest, "DOCUMENT_ERROR", error));
     } catch (error) {
-      const guest = this.guests.get(nonce);
-      if (guest) this.dispose(guest);
+      if (invocationGuest && this.guests.get(nonce) === invocationGuest)
+        this.dispose(invocationGuest);
       throw error;
     } finally {
-      this.reservations.delete(nonce);
+      if (this.reservations.get(nonce) === reservation) this.reservations.delete(nonce);
     }
   }
 
@@ -575,6 +607,16 @@ export class PiWorkspaceVisuals {
     contents.on("input-event", (_event, input) => {
       if (ACTIVITY_INPUTS.has(input.type) && guest.visible && !guest.terminated)
         this.hostSignal(guest, { kind: "activity", binding: guest.input.current.binding });
+    });
+    contents.on("before-input-event", (event, input) => {
+      if (!guest.visible || guest.terminated || guest.host.isDestroyed()) return;
+      this.dependencies.keyboard.handleTrustedNativeInput({
+        contents,
+        hostContents: guest.host.webContents,
+        sourceId: `${VISUAL_SCHEME}:${guest.input.current.binding.nonce}`,
+        event,
+        input,
+      });
     });
     contents.on("unresponsive", () =>
       this.fail(guest, "DOCUMENT_UNRESPONSIVE", new Error("Visual renderer stopped responding")),
@@ -766,7 +808,10 @@ export class PiWorkspaceVisuals {
       guest.host.isVisible() &&
       !guest.host.isMinimized() &&
       guest.input.bounds.width > 0 &&
-      guest.input.bounds.height > 0;
+      guest.input.bounds.height > 0 &&
+      !guest.terminated &&
+      guest.input.occluded !== true;
+    guest.view.setVisible(visible);
     if (visible === guest.visible) return;
     guest.visible = visible;
     guest.epoch += 1;
@@ -817,8 +862,8 @@ export class PiWorkspaceVisuals {
   }
 
   private releaseWindow(window: BrowserWindow, hostId: number): void {
-    for (const [nonce, owner] of this.reservations)
-      if (owner === hostId) this.reservations.delete(nonce);
+    for (const [nonce, reservation] of this.reservations)
+      if (reservation.hostId === hostId) this.reservations.delete(nonce);
     for (const guest of this.guests.values()) if (guest.host === window) this.dispose(guest);
   }
 }

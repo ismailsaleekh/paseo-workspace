@@ -1,5 +1,35 @@
 import { type PermissionResponse } from "expo-modules-core";
+import { AppRegistry } from "react-native";
 import ExpoTwoWayAudioModule from "./ExpoTwoWayAudioModule";
+
+/** Headless task of the background playback service (Android). */
+export const BACKGROUND_PLAYBACK_TASK = "ExpoTwoWayAudioBackgroundPlayback";
+let finishBackgroundTask: (() => void) | null = null;
+// While background playback is enabled this task keeps JS timers running in the background;
+// it finishes when background playback is disabled, which stops its service.
+AppRegistry.registerHeadlessTask(
+  BACKGROUND_PLAYBACK_TASK,
+  () => () =>
+    new Promise<void>((resolve) => {
+      finishBackgroundTask = resolve;
+    }),
+);
+
+/** Whether this binary can keep speech playing in the background (Android). */
+export function supportsBackgroundPlayback(): boolean {
+  // COMPAT(backgroundPlayback): added in v0.10.4. An OTA JS update can land on an older binary
+  // without the native function. Drop the guard once the binary floor is >= v0.10.4.
+  return typeof ExpoTwoWayAudioModule.setBackgroundPlayback === "function";
+}
+
+/** Starts (from the foreground) or stops the background playback service. */
+export function setBackgroundPlayback(enabled: boolean): void {
+  if (!enabled) {
+    finishBackgroundTask?.();
+    finishBackgroundTask = null;
+  }
+  ExpoTwoWayAudioModule.setBackgroundPlayback(enabled);
+}
 
 export async function initialize() {
   return await ExpoTwoWayAudioModule.initialize();

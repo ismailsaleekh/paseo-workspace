@@ -22,6 +22,7 @@ export type LocalSpeechWorkerRequest =
       requestId: string;
       config: LocalSpeechWorkerConfig;
       text: string;
+      speakerId?: number;
     }
   | {
       type: "stt.transcribe";

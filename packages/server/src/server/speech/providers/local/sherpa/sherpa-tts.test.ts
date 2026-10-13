@@ -69,6 +69,16 @@ describe("SherpaOnnxTTS", () => {
     expect(Buffer.concat(chunks).length).toBe(8);
   });
 
+  it("uses a per-request speaker without changing the configured one", async () => {
+    const { tts, requests } = createTts();
+    await tts.synthesizeSpeech("Adam here", { speakerId: 5 });
+    await tts.synthesizeSpeech("default");
+    expect(requests).toEqual([
+      { text: "Adam here", sid: 5, speed: 1, enableExternalBuffer: false },
+      { text: "default", sid: 0, speed: 1, enableExternalBuffer: false },
+    ]);
+  });
+
   it("keeps the event loop available and serializes native synthesis", async () => {
     const { pending, wait } = holdNativeSynthesis();
     const { tts, requests } = createTts(undefined, wait);

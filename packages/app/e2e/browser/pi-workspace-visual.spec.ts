@@ -284,29 +284,8 @@ test("real Pi controls and inspects a persistent interactive explanation", async
     expect(texts.some((message) => message.role === "user" && message.text === followup)).toBe(
       true,
     );
-    const prefix = "<pi-workspace-context>";
-    const suffix = "</pi-workspace-context>";
-    const contexts = texts.filter(
-      (message) => message.text.startsWith(prefix) && message.text.endsWith(suffix),
-    );
-    expect(contexts).toHaveLength(1);
-    const context = contexts[0];
-    if (!context) throw new Error("No separate visual context reached the actual Pi model request");
-    const contextData: unknown = JSON.parse(
-      context.text.slice(prefix.length, -suffix.length).trim(),
-    );
-    const supplied = z
-      .object({
-        id: z.string(),
-        state: z.object({ value: z.number() }),
-        selection: z.object({ id: z.string(), text: z.string() }),
-      })
-      .parse(contextData);
-    expect(supplied).toEqual({
-      id: shown.id,
-      state: { value: 3 },
-      selection: { id: "result", text: "9" },
-    });
+    // Drawing state is never injected into model requests; the agent inspects on demand.
+    expect(texts.some((message) => message.text.includes("<pi-workspace-context>"))).toBe(false);
     const observed = inspectionSchema.parse(await call("visual_inspect", { id: shown.id }));
     expect(observed.id).toBe(shown.id);
     expect(observed.state.value).toBe(3);

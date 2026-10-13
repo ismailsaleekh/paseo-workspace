@@ -9,10 +9,17 @@ import type { VisualEvent } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import {
   parseSpeechEvent,
   speechReceipt,
+  type SpeechClientSignal,
+  type SpeechDevice,
   type SpeechPlayback,
+  type SpeechVoice,
 } from "@getpaseo/protocol/pi-workspace/speech";
 import type { ClientPresenceState } from "../agent-attention-policy.js";
-import type { SpeechStreamResult, TextToSpeechProvider } from "../speech/speech-provider.js";
+import type {
+  SpeechStreamResult,
+  SpeechSynthesisOptions,
+  TextToSpeechProvider,
+} from "../speech/speech-provider.js";
 import { VisualService } from "./service.js";
 import { VisualStorage } from "./storage.js";
 
@@ -20,8 +27,13 @@ const owner = { agentId: "speech-agent", sessionId: "speech-session" };
 
 class Tts implements TextToSpeechProvider {
   readonly texts: string[] = [];
-  async synthesizeSpeech(text: string): Promise<SpeechStreamResult> {
+  readonly speakers: Array<number | undefined> = [];
+  async synthesizeSpeech(
+    text: string,
+    options?: SpeechSynthesisOptions,
+  ): Promise<SpeechStreamResult> {
     this.texts.push(text);
+    this.speakers.push(options?.speakerId);
     return { stream: Readable.from([Buffer.alloc(4800)]), format: "pcm;rate=24000" };
   }
 }
@@ -330,5 +342,225 @@ test("a cancelled queued utterance leaves the queue without playing", async () =
     await first;
     await settle();
     assert.deepEqual(tts.texts, ["First."]);
+  });
+});
+
+// App-level speech: one subscription per app connection, whatever the app displays.
+class AppPort {
+  readonly source = {};
+  readonly heard: Array<{ agentId: string; voice: SpeechVoice; playback: SpeechPlayback }> = [];
+  presence: ClientPresenceState | null = null;
+  generation = "";
+}
+function appClient(
+  service: VisualService,
+  clientId: string,
+  device: SpeechDevice,
+  background = false,
+): AppPort & {
+  release(): void;
+  report(agentId: string, signal: Exclude<SpeechClientSignal, { type: "ready" }>): Promise<number>;
+} {
+  const port = new AppPort();
+  const observation = service.observeSpeech({
+    source: port.source,
+    clientId,
+    device,
+    background,
+    presence: () => port.presence,
+    emit: (agentId, voice, speech) => {
+      const playback = parseSpeechEvent(speech);
+      if (!playback) throw new Error("Invalid speech event");
+      port.heard.push({ agentId, voice, playback });
+    },
+  });
+  port.generation = observation.generation;
+  return Object.assign(port, {
+    release: () => observation.release(),
+    report: (agentId: string, signal: Exclude<SpeechClientSignal, { type: "ready" }>) =>
+      service.receive({
+        agentId,
+        source: port.source,
+        receipt: speechReceipt(port.generation, signal),
+      }),
+  });
+}
+const hidden: ClientPresenceState = {
+  appVisible: false,
+  lastActivityAtMs: Date.now(),
+  focusedAgentId: null,
+  focusedTerminalId: null,
+};
+
+test("app speech plays on the device the user talks from, in the requested named voice", async () => {
+  await harness(async (service, tts) => {
+    const mac = appClient(service, "mac-app", "computer");
+    const phone = appClient(service, "phone-app", "phone");
+    service.noteUserMessage(owner.agentId, "phone-app");
+    const signal = new AbortController().signal;
+    const first = service.speak(owner, { utterance: utteranceId(20), text: "Michael." }, signal);
+    await settle();
+    assert.deepEqual(mac.heard, [], "speech never plays on two devices");
+    assert.deepEqual(
+      phone.heard.map((entry) => [entry.agentId, entry.voice, entry.playback.type]),
+      [
+        [owner.agentId, "michael", "audio"],
+        [owner.agentId, "michael", "end"],
+      ],
+    );
+    assert.deepEqual(tts.speakers, [6], "Michael is Kokoro am_michael by default");
+    await assert.rejects(
+      service.receive({
+        agentId: owner.agentId,
+        source: mac.source,
+        receipt: speechReceipt(phone.generation, {
+          type: "completed",
+          utterance: utteranceId(20),
+          durationMs: 1,
+        }),
+      }),
+      (error: unknown) => error instanceof VisualFailure && error.code === "STALE_CLIENT",
+    );
+    await phone.report(owner.agentId, {
+      type: "completed",
+      utterance: utteranceId(20),
+      durationMs: 100,
+    });
+    assert.deepEqual(await first, {
+      kind: "speech",
+      utterance: utteranceId(20),
+      status: "completed",
+      client: phone.generation,
+      durationMs: 100,
+    });
+
+    const second = service.speak(
+      owner,
+      { utterance: utteranceId(21), text: "Adam.", voice: "adam" },
+      signal,
+    );
+    await settle();
+    assert.equal(phone.heard.at(-1)?.voice, "adam");
+    assert.deepEqual(tts.speakers, [6, 5], "Adam is Kokoro am_adam for that request only");
+    await phone.report(owner.agentId, {
+      type: "completed",
+      utterance: utteranceId(21),
+      durationMs: 90,
+    });
+    assert.equal((await second).status, "completed");
+  });
+});
+
+test("a requested device wins; an unavailable device fails without moving the speech", async () => {
+  await harness(async (service) => {
+    const mac = appClient(service, "mac-app", "computer");
+    const phone = appClient(service, "phone-app", "phone");
+    phone.presence = hidden;
+    const signal = new AbortController().signal;
+    await assert.rejects(
+      service.speak(owner, { utterance: utteranceId(30), text: "Phone.", device: "phone" }, signal),
+      (error: unknown) => error instanceof VisualFailure && error.code === "DEVICE_UNAVAILABLE",
+    );
+    service.noteUserMessage(owner.agentId, "phone-app");
+    await assert.rejects(
+      service.speak(owner, { utterance: utteranceId(31), text: "Here." }, signal),
+      (error: unknown) => error instanceof VisualFailure && error.code === "DEVICE_UNAVAILABLE",
+    );
+    assert.deepEqual(mac.heard, [], "the user's device is never silently swapped");
+
+    const onMac = service.speak(
+      owner,
+      { utterance: utteranceId(32), text: "Mac.", device: "computer" },
+      signal,
+    );
+    await settle();
+    assert.equal(mac.heard.at(-1)?.playback.type, "end");
+    await mac.report(owner.agentId, {
+      type: "completed",
+      utterance: utteranceId(32),
+      durationMs: 5,
+    });
+    assert.equal((await onMac).client, mac.generation);
+
+    phone.release();
+    await assert.rejects(
+      service.speak(owner, { utterance: utteranceId(33), text: "Gone." }, signal),
+      (error: unknown) => error instanceof VisualFailure && error.code === "DEVICE_UNAVAILABLE",
+    );
+  });
+});
+
+test("a phone with background speech enabled plays while hidden", async () => {
+  await harness(async (service) => {
+    const phone = appClient(service, "phone-app", "phone", true);
+    phone.presence = hidden;
+    service.noteUserMessage(owner.agentId, "phone-app");
+    const speaking = service.speak(
+      owner,
+      { utterance: utteranceId(40), text: "Locked." },
+      new AbortController().signal,
+    );
+    await settle();
+    assert.equal(phone.heard.at(-1)?.playback.type, "end");
+    await phone.report(owner.agentId, {
+      type: "completed",
+      utterance: utteranceId(40),
+      durationMs: 7,
+    });
+    assert.equal((await speaking).status, "completed");
+  });
+});
+
+test("a user stop ends the conversation's speech until the user's next message", async () => {
+  await harness(async (service, tts) => {
+    const mac = appClient(service, "mac-app", "computer");
+    const signal = new AbortController().signal;
+    const first = service.speak(owner, { utterance: utteranceId(50), text: "One." }, signal);
+    const queued = service.speak(owner, { utterance: utteranceId(51), text: "Two." }, signal);
+    await settle();
+    await mac.report(owner.agentId, { type: "stopped", utterance: utteranceId(50), durationMs: 3 });
+    assert.equal((await first).status, "stopped");
+    await assert.rejects(
+      queued,
+      (error: unknown) => error instanceof VisualFailure && error.code === "SPEECH_STOPPED",
+    );
+    assert.deepEqual(tts.texts, ["One."], "the stopped narration does not continue");
+
+    service.noteUserMessage(owner.agentId, "mac-app");
+    const after = service.speak(owner, { utterance: utteranceId(52), text: "Three." }, signal);
+    await settle();
+    await mac.report(owner.agentId, {
+      type: "completed",
+      utterance: utteranceId(52),
+      durationMs: 4,
+    });
+    assert.equal((await after).status, "completed");
+  });
+});
+
+test("one voice at a time: another conversation's speech waits its turn", async () => {
+  await harness(async (service, tts) => {
+    const mac = appClient(service, "mac-app", "computer");
+    const other = { agentId: "other-agent", sessionId: "other-session" };
+    const signal = new AbortController().signal;
+    const first = service.speak(owner, { utterance: utteranceId(60), text: "First." }, signal);
+    const second = service.speak(other, { utterance: utteranceId(61), text: "Second." }, signal);
+    await settle();
+    assert.deepEqual(tts.texts, ["First."]);
+    await mac.report(owner.agentId, {
+      type: "completed",
+      utterance: utteranceId(60),
+      durationMs: 1,
+    });
+    await first;
+    await settle();
+    assert.deepEqual(tts.texts, ["First.", "Second."]);
+    assert.equal(mac.heard.at(-1)?.agentId, other.agentId);
+    await mac.report(other.agentId, {
+      type: "completed",
+      utterance: utteranceId(61),
+      durationMs: 1,
+    });
+    assert.equal((await second).status, "completed");
   });
 });
