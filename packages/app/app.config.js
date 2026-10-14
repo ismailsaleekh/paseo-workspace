@@ -79,7 +79,8 @@ const variants = {
     }),
   },
   development: {
-    name: "Paseo Debug",
+    // The personal Pi workspace build (same name as the desktop app); package id unchanged.
+    name: "Paseo Workspace",
     packageId: "sh.paseo.debug",
     googleServicesFile: resolveSecretFile({
       envKey: "GOOGLE_SERVICES_FILE_DEBUG",
