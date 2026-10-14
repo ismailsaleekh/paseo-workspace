@@ -16,7 +16,10 @@ export const VISUAL_SIDEBAR_WIDE_LAYOUT = {
 export function visualSidebarLayout(
   compact: boolean,
   open: boolean,
+  fullscreen = false,
 ): { chatVisible: boolean; sidebarVisible: boolean; direction: "row" | "column" } {
+  // Full screen shows only the drawing; the chat stays mounted behind it.
+  if (open && fullscreen) return { chatVisible: false, sidebarVisible: true, direction: "column" };
   return {
     chatVisible: !compact || !open,
     sidebarVisible: open,

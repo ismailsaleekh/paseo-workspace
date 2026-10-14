@@ -30,6 +30,8 @@ export interface VisualDocumentProps {
   command: Exclude<VisualCommand, { kind: "render" }> | null;
   receive(value: unknown): void;
   hostEvent?(event: VisualHostSignal): void;
+  /** Escape pressed inside the drawing itself (native views only; the drawing still gets it). */
+  onEscape?(): void;
   reportError(error: unknown): void;
 }
 export interface VisualStateMessage {

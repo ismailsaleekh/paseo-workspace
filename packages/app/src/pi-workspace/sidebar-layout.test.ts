@@ -38,3 +38,14 @@ test("wide drawing layout retains chat alongside, compact selects a dedicated de
     direction: "column",
   });
 });
+
+test("full screen shows only the drawing, on wide and compact screens, and only while open", () => {
+  for (const compact of [false, true]) {
+    expect(visualSidebarLayout(compact, true, true)).toEqual({
+      chatVisible: false,
+      sidebarVisible: true,
+      direction: "column",
+    });
+    expect(visualSidebarLayout(compact, false, true)).toEqual(visualSidebarLayout(compact, false));
+  }
+});

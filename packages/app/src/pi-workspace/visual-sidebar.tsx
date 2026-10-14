@@ -6,12 +6,19 @@ import type { VisualDocument } from "@getpaseo/protocol/pi-workspace/contracts";
 import type { VisualController, VisualLibraryState } from "./controller";
 import { visualHistoryLabel } from "./library";
 import { VISUAL_SIDEBAR_WIDE_LAYOUT } from "./sidebar-layout";
+import { VisualFrame } from "./visual-frame";
 
 interface VisualSidebarProps {
   controller: VisualController;
   library: VisualLibraryState;
   current: VisualDocument | null;
   compact: boolean;
+  /** Only the drawing is shown (see VisualFrame). */
+  fullscreen: boolean;
+  /** Present while a drawing is shown. */
+  onFullscreen: (() => void) | null;
+  onExitFullscreen(): void;
+  fullscreenAccessory?: ReactNode;
   children: ReactNode;
 }
 interface DrawingRowProps {
@@ -135,6 +142,10 @@ export function VisualSidebar({
   library,
   current,
   compact,
+  fullscreen,
+  onFullscreen,
+  onExitFullscreen,
+  fullscreenAccessory,
   children,
 }: VisualSidebarProps) {
   const pending = library.status === "loading";
@@ -148,53 +159,82 @@ export function VisualSidebar({
     void controller.refreshLibrary(true);
   }, [controller]);
   return (
-    <View style={[styles.root, compact ? styles.compact : styles.wide]} testID="pi-visuals-sidebar">
-      <View style={styles.chrome}>
-        <Text style={styles.title}>Drawings</Text>
-        <Button
-          variant="ghost"
-          size="sm"
-          testID="pi-visuals-close"
-          disabled={pending}
-          onPress={close}
+    <View
+      style={[styles.root, compact || fullscreen ? styles.compact : styles.wide]}
+      testID="pi-visuals-sidebar"
+    >
+      {fullscreen ? null : (
+        <>
+          <View style={styles.chrome}>
+            <Text style={styles.title}>Drawings</Text>
+            <View style={styles.actions}>
+              {onFullscreen ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  testID="pi-visual-fullscreen"
+                  accessibilityLabel="Show the drawing full screen"
+                  onPress={onFullscreen}
+                >
+                  Full screen
+                </Button>
+              ) : null}
+              <Button
+                variant="ghost"
+                size="sm"
+                testID="pi-visuals-close"
+                disabled={pending}
+                onPress={close}
+              >
+                {compact ? "Back to chat" : "Close"}
+              </Button>
+            </View>
+          </View>
+          {library.error ? (
+            <View style={styles.notice}>
+              <Text accessibilityRole="alert" style={styles.error}>
+                {library.error}
+              </Text>
+              <Button variant="ghost" size="sm" onPress={retry}>
+                Retry library
+              </Button>
+            </View>
+          ) : null}
+          {pending ? <Text style={styles.metadata}>Loading...</Text> : null}
+          <ScrollView style={styles.library} contentContainerStyle={styles.list}>
+            {library.items.map((item) => (
+              <DrawingRow
+                key={item.id}
+                controller={controller}
+                id={item.id}
+                title={item.title}
+                pending={pending}
+              />
+            ))}
+            {library.nextCursor ? (
+              <Button variant="ghost" size="sm" disabled={pending} onPress={more}>
+                Load more drawings
+              </Button>
+            ) : null}
+            {library.items.length === 0 && !pending ? (
+              <Text style={styles.metadata}>No drawings yet</Text>
+            ) : null}
+          </ScrollView>
+          {current ? (
+            <DrawingVersions controller={controller} library={library} current={current} />
+          ) : null}
+        </>
+      )}
+      <View style={styles.document}>
+        <VisualFrame
+          fullscreen={fullscreen}
+          title={current?.title ?? "Drawing"}
+          onExit={onExitFullscreen}
+          accessory={fullscreenAccessory}
         >
-          {compact ? "Back to chat" : "Close"}
-        </Button>
+          {children}
+        </VisualFrame>
       </View>
-      {library.error ? (
-        <View style={styles.notice}>
-          <Text accessibilityRole="alert" style={styles.error}>
-            {library.error}
-          </Text>
-          <Button variant="ghost" size="sm" onPress={retry}>
-            Retry library
-          </Button>
-        </View>
-      ) : null}
-      {pending ? <Text style={styles.metadata}>Loading...</Text> : null}
-      <ScrollView style={styles.library} contentContainerStyle={styles.list}>
-        {library.items.map((item) => (
-          <DrawingRow
-            key={item.id}
-            controller={controller}
-            id={item.id}
-            title={item.title}
-            pending={pending}
-          />
-        ))}
-        {library.nextCursor ? (
-          <Button variant="ghost" size="sm" disabled={pending} onPress={more}>
-            Load more drawings
-          </Button>
-        ) : null}
-        {library.items.length === 0 && !pending ? (
-          <Text style={styles.metadata}>No drawings yet</Text>
-        ) : null}
-      </ScrollView>
-      {current ? (
-        <DrawingVersions controller={controller} library={library} current={current} />
-      ) : null}
-      <View style={styles.document}>{children}</View>
     </View>
   );
 }
@@ -216,6 +256,7 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
   },
+  actions: { flexDirection: "row", alignItems: "center" },
   title: {
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,

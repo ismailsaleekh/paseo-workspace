@@ -1871,7 +1871,7 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
-const FOCUS_MODE_SPEECH_ORB = <SpeechOrb />;
+const SPEECH_ORB = <SpeechOrb />;
 
 function PiVisualHost({
   serverId,
@@ -1891,7 +1891,8 @@ function PiVisualHost({
     <ConnectedVisualHost
       client={client}
       agentId={agentId}
-      chromeAccessory={focusMode ? FOCUS_MODE_SPEECH_ORB : null}
+      chromeAccessory={focusMode ? SPEECH_ORB : null}
+      fullscreenAccessory={SPEECH_ORB}
     >
       {children}
     </ConnectedVisualHost>

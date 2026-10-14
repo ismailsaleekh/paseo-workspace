@@ -121,6 +121,14 @@ export function hasActiveWebOverlay(): boolean {
   return getTopWebOverlay() !== undefined;
 }
 
+/** Whether the top overlay paints over `element`: it is not inside that overlay's own scope. */
+export function isOccludedByWebOverlay(element: Element): boolean {
+  const top = getTopWebOverlay();
+  if (!top) return false;
+  const scope = top.getScope();
+  return !scope || !scope.contains(element);
+}
+
 function getFocusableElements(scope: HTMLElement): HTMLElement[] {
   const selector = [
     "a[href]",

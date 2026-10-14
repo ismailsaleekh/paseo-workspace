@@ -105,6 +105,8 @@ export const VisualClientReceiptSchema = z.union([
 export const DesktopVisualEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("paseo-visual"), receipt: VisualReceiptSchema }).strict(),
   z.object({ type: z.literal("paseo-visual-host"), event: VisualHostSignalSchema }).strict(),
+  // Escape pressed inside a native drawing view. The guest still receives the key.
+  z.object({ type: z.literal("paseo-visual-escape"), nonce: z.string().uuid() }).strict(),
 ]);
 export type VisualHostSignal = z.infer<typeof VisualHostSignalSchema>;
 export type VisualClientReceipt = z.infer<typeof VisualClientReceiptSchema>;

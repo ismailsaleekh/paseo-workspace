@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getDesktopHost, type DesktopHostBridge } from "@/desktop/host";
-import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
+import { isOccludedByWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import type {
   DesktopVisualBridge,
   DesktopVisualBoundsUpdate,
@@ -36,10 +36,16 @@ export function VisualDocument({
   command,
   receive,
   hostEvent,
+  onEscape,
   reportError,
   desktop = getDesktopHost(),
 }: DesktopVisualDocumentProps) {
   const surface = useRef<HTMLDivElement>(null);
+  // Read at delivery: a changed handler must not remount the native view.
+  const escape = useRef(onEscape);
+  useEffect(() => {
+    escape.current = onEscape;
+  }, [onEscape]);
   const [bridge, setBridge] = useState<DesktopVisualBridge | null>(null);
   const nonce = current.binding.nonce;
   useEffect(() => {
@@ -61,7 +67,7 @@ export function VisualDocument({
     const resize = () => {
       if (stopped || !mounted) return;
       void visuals
-        .bounds({ nonce, bounds: bounds(target), occluded: hasActiveWebOverlay() })
+        .bounds({ nonce, bounds: bounds(target), occluded: isOccludedByWebOverlay(target) })
         .catch(failure);
     };
     const stopOverlay = subscribeWebOverlayActivity(resize);
@@ -77,6 +83,8 @@ export function VisualDocument({
           const message = DesktopVisualEventSchema.parse(value);
           if (message.type === "paseo-visual") {
             if (message.receipt.binding.nonce === nonce) receive(message);
+          } else if (message.type === "paseo-visual-escape") {
+            if (message.nonce === nonce) escape.current?.();
           } else if (message.event.binding.nonce === nonce) {
             if (!hostEvent) throw new Error("Desktop visual host event channel is unavailable");
             hostEvent(message.event);
@@ -95,7 +103,7 @@ export function VisualDocument({
         current,
         commandId: renderCommandId,
         bounds: bounds(target),
-        occluded: hasActiveWebOverlay(),
+        occluded: isOccludedByWebOverlay(target),
       });
       // Cleanup already cancelled/disposed this invocation before any replacement effect mounted.
       // An old successful reply must not issue another same-nonce disposal against that replacement.

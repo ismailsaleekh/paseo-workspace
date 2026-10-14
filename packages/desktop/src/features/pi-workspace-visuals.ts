@@ -617,6 +617,12 @@ export class PiWorkspaceVisuals {
         event,
         input,
       });
+      // Lets the app leave full screen; the key is not consumed, so the drawing still sees it.
+      if (input.type === "keyDown" && input.key === "Escape" && !input.isAutoRepeat)
+        guest.host.webContents.send("paseo:event:visual", {
+          type: "paseo-visual-escape",
+          nonce: guest.input.current.binding.nonce,
+        });
     });
     contents.on("unresponsive", () =>
       this.fail(guest, "DOCUMENT_UNRESPONSIVE", new Error("Visual renderer stopped responding")),

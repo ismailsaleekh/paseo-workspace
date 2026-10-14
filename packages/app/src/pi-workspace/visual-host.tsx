@@ -28,12 +28,29 @@ interface ConnectedVisualHostProps {
   children: ReactNode;
   /** Extra controls next to the Drawings toggle (the speech orb in desktop focus mode). */
   chromeAccessory?: ReactNode;
+  /** Controls for the full-screen drawing bar (the speech orb). */
+  fullscreenAccessory?: ReactNode;
 }
 
 function visualPlatform(): VisualPlatform {
   if (Platform.OS === "web") return getIsElectron() ? "electron" : "web";
   if (Platform.OS === "android" || Platform.OS === "ios") return Platform.OS;
   throw new Error("Pi visual workspace is unavailable on this platform");
+}
+
+/**
+ * Full screen belongs to the drawing it was opened on: a new drawing, a closed sidebar or an
+ * inactive chat ends it. `enterFullscreen` is null while no drawing is shown.
+ */
+function useVisualFullscreen(nonce: string | null, open: boolean) {
+  const [fullscreenNonce, setFullscreenNonce] = useState<string | null>(null);
+  const enter = useCallback(() => setFullscreenNonce(nonce), [nonce]);
+  const exitFullscreen = useCallback(() => setFullscreenNonce(null), []);
+  return {
+    fullscreen: open && nonce !== null && fullscreenNonce === nonce,
+    enterFullscreen: nonce === null ? null : enter,
+    exitFullscreen,
+  };
 }
 
 // On Android a backgrounded app releases its display (DISPLAY_UNAVAILABLE when addressed); the
@@ -57,6 +74,7 @@ export function ConnectedVisualHost({
   agentId,
   children,
   chromeAccessory = null,
+  fullscreenAccessory,
 }: ConnectedVisualHostProps) {
   const [reconnect, restart] = useReducer((version: number) => version + 1, 0);
   const compact = useIsCompactFormFactor();
@@ -84,7 +102,10 @@ export function ConnectedVisualHost({
   const retryLibrary = useCallback(() => {
     void controller.refreshLibrary();
   }, [controller]);
-  const layout = visualSidebarLayout(compact, library.visible && active);
+  const open = library.visible && active;
+  const nonce = state.current?.binding.nonce ?? null;
+  const { fullscreen, enterFullscreen, exitFullscreen } = useVisualFullscreen(nonce, open);
+  const layout = visualSidebarLayout(compact, open, fullscreen);
   const reportError = useCallback((error: unknown) => controller.reportError(error), [controller]);
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +155,7 @@ export function ConnectedVisualHost({
             command={state.command}
             receive={controller.receive}
             hostEvent={controller.hostEvent}
+            onEscape={exitFullscreen}
             reportError={reportError}
           />
         ) : null}
@@ -177,6 +199,10 @@ export function ConnectedVisualHost({
           library={library}
           current={state.current?.document ?? null}
           compact={compact}
+          fullscreen={fullscreen}
+          onFullscreen={enterFullscreen}
+          onExitFullscreen={exitFullscreen}
+          fullscreenAccessory={fullscreenAccessory}
         >
           {surface}
         </VisualSidebar>
