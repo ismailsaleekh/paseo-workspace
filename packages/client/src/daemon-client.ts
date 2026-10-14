@@ -1016,6 +1016,7 @@ interface PendingBinaryFileRead {
   path: string;
   maxBytes?: number;
   sink?: FileStreamSink;
+  timeout?: number;
 }
 
 interface BinaryFileTransferState extends PendingBinaryFileRead {
@@ -1028,6 +1029,7 @@ interface BinaryFileTransferState extends PendingBinaryFileRead {
   modifiedAt: string;
   revision?: string;
   chunks: Uint8Array[];
+  receivedBytes: number;
 }
 
 type RpcWaitResult<T> = { kind: "ok"; value: T } | { kind: "error"; error: DaemonRpcError };
@@ -4997,6 +4999,7 @@ export class DaemonClient {
     requestId?: string,
     acceptBinary = false,
     maxBytes?: number,
+    timeout?: number,
   ): Promise<FileExplorerPayload> {
     return this.sendCorrelatedSessionRequest({
       requestId,
@@ -5009,6 +5012,7 @@ export class DaemonClient {
         ...(maxBytes ? { maxBytes } : {}),
       },
       responseType: "file_explorer_response",
+      timeout,
     });
   }
 
@@ -5027,13 +5031,19 @@ export class DaemonClient {
     return payload.directory;
   }
 
+  /**
+   * `timeout` bounds the whole transfer, not each frame. `0` disables the timer (as
+   * `workspace.create` does) for files that legitimately take longer than the default over a
+   * slow link; a dead connection still rejects on disconnect.
+   */
   async readFile(
     cwd: string,
     path: string,
     requestId?: string,
     maxBytes?: number,
+    timeout?: number,
   ): Promise<FileReadResult> {
-    return (await this.transferFile({ cwd, path, maxBytes }, requestId)).file;
+    return (await this.transferFile({ cwd, path, maxBytes, timeout }, requestId)).file;
   }
 
   /** Reads a file of any size without holding it in memory: each chunk goes straight to `sink`. */
@@ -5043,7 +5053,7 @@ export class DaemonClient {
     sink: FileStreamSink,
     requestId?: string,
   ): Promise<FileStreamResult> {
-    const { file, streamed } = await this.transferFile({ cwd, path, sink }, requestId);
+    const { file, streamed } = await this.transferFile({ cwd, path, sink, timeout: 0 }, requestId);
     if (!streamed) {
       // A connection without the binary channel answers with the whole file at once.
       sink.begin({ mime: file.mime, size: file.size });
@@ -5057,7 +5067,7 @@ export class DaemonClient {
     read: PendingBinaryFileRead,
     requestId: string | undefined,
   ): Promise<{ file: FileReadResult; streamed: boolean }> {
-    const { cwd, path, maxBytes } = read;
+    const { cwd, path, maxBytes, timeout } = read;
     const resolvedRequestId = this.createRequestId(requestId);
     this.pendingBinaryFileReads.set(resolvedRequestId, read);
     try {
@@ -5068,6 +5078,7 @@ export class DaemonClient {
         resolvedRequestId,
         true,
         maxBytes,
+        timeout,
       );
       if (payload.error) {
         throw new Error(payload.error);
@@ -6793,6 +6804,7 @@ export class DaemonClient {
         modifiedAt: frame.metadata.modifiedAt,
         revision: frame.metadata.revision,
         chunks: [],
+        receivedBytes: 0,
       };
       this.activeBinaryFileTransfers.set(frame.requestId, transfer);
       this.feedFileSink(frame.requestId, transfer, (sink) =>
@@ -6812,6 +6824,7 @@ export class DaemonClient {
       if (transfer.maxBytes && transfer.size > transfer.maxBytes) {
         return;
       }
+      transfer.receivedBytes += frame.payload.byteLength;
       if (transfer.sink) {
         this.feedFileSink(frame.requestId, transfer, (sink) => sink.write(frame.payload));
         return;
@@ -6835,6 +6848,18 @@ export class DaemonClient {
           requestId: frame.requestId,
         },
       });
+      return;
+    }
+
+    const received = transfer.receivedBytes;
+    if (received !== transfer.size) {
+      this.activeBinaryFileTransfers.delete(frame.requestId);
+      this.rejectWaitersForRequestId(
+        frame.requestId,
+        new Error(
+          `File transfer incomplete: expected ${transfer.size} bytes, received ${received}.`,
+        ),
+      );
       return;
     }
 

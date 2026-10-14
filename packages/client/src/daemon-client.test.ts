@@ -2984,6 +2984,167 @@ test("a failing sink fails streamFile with its own error and ignores the rest of
   expect(written).toEqual([3]);
 });
 
+function sendBinaryFile(
+  mock: ReturnType<typeof createMockTransport>,
+  requestId: string,
+  announcedSize: number,
+  chunks: string[],
+) {
+  mock.triggerMessage(
+    encodeFileTransferFrame({
+      opcode: FileTransferOpcode.FileBegin,
+      requestId,
+      metadata: {
+        mime: "application/octet-stream",
+        size: announcedSize,
+        encoding: "binary",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+      },
+    }),
+  );
+  for (const chunk of chunks) {
+    mock.triggerMessage(
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileChunk,
+        requestId,
+        payload: new TextEncoder().encode(chunk),
+      }),
+    );
+  }
+}
+
+test("readFile with timeout 0 outlives the default request timeout", async () => {
+  useHeartbeatClock();
+  const { mock, client } = await connectedFileClient("clsk_file_no_timeout");
+
+  const responsePromise = client.readFile("/tmp/project", "slow.bin", "req-slow", undefined, 0);
+  await vi.advanceTimersByTimeAsync(60_001);
+
+  sendBinaryFile(mock, "req-slow", 5, ["hello"]);
+  mock.triggerMessage(
+    encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "req-slow" }),
+  );
+
+  const result = await responsePromise;
+  expect(result.size).toBe(5);
+  expect(new TextDecoder().decode(result.bytes)).toBe("hello");
+});
+
+test("readFile rejects a binary transfer that ends before the announced size", async () => {
+  const { mock, client } = await connectedFileClient("clsk_file_short");
+
+  const responsePromise = client.readFile("/tmp/project", "short.bin", "req-short");
+  sendBinaryFile(mock, "req-short", 10, ["hello"]);
+  mock.triggerMessage(
+    encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "req-short" }),
+  );
+
+  await expect(responsePromise).rejects.toThrow(
+    "File transfer incomplete: expected 10 bytes, received 5.",
+  );
+});
+
+test("readFile rejects a binary transfer that exceeds the announced size", async () => {
+  const { mock, client } = await connectedFileClient("clsk_file_long");
+
+  const responsePromise = client.readFile("/tmp/project", "long.bin", "req-long");
+  const settled = responsePromise.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  sendBinaryFile(mock, "req-long", 4, ["hello!"]);
+
+  expect(() =>
+    mock.triggerMessage(
+      encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "req-long" }),
+    ),
+  ).not.toThrow();
+  expect(await settled).toMatchObject({
+    message: "File transfer incomplete: expected 4 bytes, received 6.",
+  });
+});
+
+test.each([4, 10])(
+  "streamFile rejects a sink transfer whose announced size %s does not match bytes",
+  async (size) => {
+    const { client, mock } = await connectedFileClient("clsk_stream_size");
+    const sizes: number[] = [];
+    const reading = client.streamFile(
+      "/tmp",
+      "clip.mp4",
+      { begin: () => {}, write: (bytes) => sizes.push(bytes.byteLength) },
+      "stream-size",
+    );
+    sendBinaryFile(mock, "stream-size", size, ["hello"]);
+    mock.triggerMessage(
+      encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "stream-size" }),
+    );
+    await expect(reading).rejects.toThrow(
+      `File transfer incomplete: expected ${size} bytes, received 5.`,
+    );
+    expect(sizes).toEqual([5]);
+  },
+);
+
+test("streamFile keeps original videos above the in-memory download limit and beyond sixty seconds", async () => {
+  useHeartbeatClock();
+  const { client, mock } = await connectedFileClient("clsk_large_stream");
+  const size = 65 * 1024 * 1024;
+  let written = 0;
+  const reading = client.streamFile(
+    "/tmp",
+    "clip.mp4",
+    {
+      begin: () => {},
+      write: (bytes) => {
+        written += bytes.byteLength;
+      },
+    },
+    "large-stream",
+  );
+  const settled = reading.then(
+    (file) => ({ file }),
+    (error: unknown) => ({ error }),
+  );
+  await vi.advanceTimersByTimeAsync(60_001);
+  expect(parseSentFrame(mock.sent[0])).not.toHaveProperty("maxBytes");
+  mock.triggerMessage(
+    encodeFileTransferFrame({
+      opcode: FileTransferOpcode.FileBegin,
+      requestId: "large-stream",
+      metadata: {
+        mime: "video/mp4",
+        size,
+        encoding: "binary",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+      },
+    }),
+  );
+  const chunk = new Uint8Array(1024 * 1024).fill(42);
+  for (let i = 0; i < 65; i += 1)
+    mock.triggerMessage(
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileChunk,
+        requestId: "large-stream",
+        payload: chunk,
+      }),
+    );
+  mock.triggerMessage(
+    encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId: "large-stream" }),
+  );
+  expect(written).toBe(size);
+  expect(await settled).toEqual({
+    file: {
+      mime: "video/mp4",
+      size,
+      path: "clip.mp4",
+      kind: "binary",
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      revision: undefined,
+    },
+  });
+});
+
 test("uploadFile sends metadata request and file bytes as binary chunks", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -7534,4 +7695,3 @@ test("measures an outbound message in UTF-8 bytes against the daemon's message l
   expect(mock.sent).toHaveLength(1);
   expect(client.getConnectionState().status).toBe("connected");
 });
-
