@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import {
   FailedToolSchema,
@@ -11,6 +12,7 @@ import {
   readRequests,
   type IsolatedHome,
 } from "../helpers/pi-harness.js";
+import { MEDIA_PROMPT_GUIDELINE } from "../../src/tools.js";
 
 const ExecutionResultSchema = z.object({
   isError: z.literal(true),
@@ -100,5 +102,21 @@ test(
   { timeout: 30_000 },
   async () => {
     await withIsolatedHome(verifyInvalidSource);
+  },
+);
+test(
+  "the system prompt tells the agent how to show images and videos only while Paseo is attached",
+  { timeout: 30_000 },
+  async () => {
+    await withIsolatedHome(async (home) => {
+      await withSdk(home, async (session) => {
+        assert.equal(session.systemPrompt.includes(MEDIA_PROMPT_GUIDELINE), false);
+      });
+      process.env["PI_WORKSPACE_SOCKET"] = join(home.root, "paseo.sock");
+      process.env["PI_WORKSPACE_CAPABILITY"] = "test-capability";
+      await withSdk(home, async (session) => {
+        assert.equal(session.systemPrompt.includes(MEDIA_PROMPT_GUIDELINE), true);
+      });
+    });
   },
 );

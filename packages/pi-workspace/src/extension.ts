@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { VisualConnection } from "./connection.js";
 import {
+  MEDIA_PROMPT_GUIDELINE,
   createVisualTool,
   presentParameters,
   updateParameters,
@@ -34,6 +35,7 @@ export default function workspace(pi: ExtensionAPI): void {
       parameters: presentParameters,
       connection,
       bind,
+      ...(config ? { promptGuidelines: [MEDIA_PROMPT_GUIDELINE] } : {}),
       description:
         "Display a prepared self-contained HTML document, from inline HTML or one UTF-8 file relative to the current cwd, or reopen a stored visual by ID. No build, external assets, hidden model or separate server. Requires attached Paseo; rendered means the displayed client acknowledged this revision.",
     }),

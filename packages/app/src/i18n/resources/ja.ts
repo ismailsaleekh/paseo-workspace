@@ -347,6 +347,12 @@ export const ja: TranslationResources = {
       imageUnavailable: "画像が利用できません",
       imagePreviewUnavailable: "画像プレビューは利用できません。",
       imagePreviewLoadFailed: "画像プレビューを読み込めません。",
+      playVideo: "動画を再生",
+      playVideoTitled: "動画を再生: {{title}}",
+      loadingVideo: "動画を読み込み中… {{percent}}%",
+      videoLoadFailed: "動画を読み込めませんでした",
+      videoLoadFailedRetry:
+        "動画を読み込めませんでした: {{reason}}。タップして再試行してください。",
       review: "レビュー",
       commentsOne: "1件のコメント",
       commentsMany: "{{count}}件のコメント",

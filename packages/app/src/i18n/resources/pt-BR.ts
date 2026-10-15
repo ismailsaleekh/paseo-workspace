@@ -346,6 +346,12 @@ export const ptBR: TranslationResources = {
       imageUnavailable: "Imagem indisponível",
       imagePreviewUnavailable: "Prévia da imagem indisponível.",
       imagePreviewLoadFailed: "Não foi possível carregar a prévia da imagem.",
+      playVideo: "Reproduzir vídeo",
+      playVideoTitled: "Reproduzir vídeo: {{title}}",
+      loadingVideo: "Carregando vídeo… {{percent}}%",
+      videoLoadFailed: "Não foi possível carregar o vídeo",
+      videoLoadFailedRetry:
+        "Não foi possível carregar o vídeo: {{reason}}. Toque para tentar novamente.",
       review: "Revisão",
       commentsOne: "1 comentário",
       commentsMany: "{{count}} comentários",

@@ -92,6 +92,8 @@ import {
 } from "@/assistant-file-links";
 import { getCompactionMarkerLabel } from "./message-compaction-label";
 import { useAssistantImage } from "@/assistant-image/use-assistant-image";
+import { AssistantMarkdownVideo } from "@/assistant-video/assistant-video";
+import { assistantVideoType } from "@/assistant-video/source";
 import {
   AttachmentFrame,
   AttachmentLabel,
@@ -1942,10 +1944,25 @@ export const AssistantMessage = memo(function AssistantMessage({
         const imageIndex = paragraphChildren.findIndex((child: ASTNode) => child?.key === node.key);
         const hasLeadingContent = imageIndex > 0;
 
+        const source = String(node.attributes?.src ?? "");
+        if (assistantVideoType(source)) {
+          return (
+            <AssistantMarkdownVideo
+              key={node.key}
+              source={source}
+              occurrenceKey={`${occurrenceKey}:${node.key}`}
+              alt={typeof node.attributes?.alt === "string" ? node.attributes.alt : undefined}
+              hasLeadingContent={hasLeadingContent}
+              client={client}
+              workspaceRoot={workspaceRoot}
+              serverId={serverId}
+            />
+          );
+        }
         return (
           <AssistantMarkdownImage
             key={node.key}
-            source={String(node.attributes?.src ?? "")}
+            source={source}
             occurrenceKey={`${occurrenceKey}:${node.key}`}
             alt={typeof node.attributes?.alt === "string" ? node.attributes.alt : undefined}
             hasLeadingContent={hasLeadingContent}

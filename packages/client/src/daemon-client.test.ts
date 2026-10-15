@@ -2799,6 +2799,112 @@ test("readFile drops an old daemon's over-budget binary chunks and reports the r
   await expect(responsePromise).rejects.toThrow("File is too large to display");
 });
 
+async function connectedFileClient(clientId: string) {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId,
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+  return { mock, client };
+}
+
+function fileFrames(requestId: string, chunks: string[]): Uint8Array[] {
+  const encoder = new TextEncoder();
+  const size = chunks.reduce((total, chunk) => total + encoder.encode(chunk).byteLength, 0);
+  return [
+    encodeFileTransferFrame({
+      opcode: FileTransferOpcode.FileBegin,
+      requestId,
+      metadata: {
+        mime: "application/octet-stream",
+        size,
+        encoding: "binary",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+      },
+    }),
+    ...chunks.map((chunk) =>
+      encodeFileTransferFrame({
+        opcode: FileTransferOpcode.FileChunk,
+        requestId,
+        payload: encoder.encode(chunk),
+      }),
+    ),
+    encodeFileTransferFrame({ opcode: FileTransferOpcode.FileEnd, requestId }),
+  ];
+}
+
+test("streamFile hands every chunk to the sink as it arrives and returns only metadata", async () => {
+  const { mock, client } = await connectedFileClient("clsk_file_stream");
+  const events: string[] = [];
+  const decoder = new TextDecoder();
+  const result = client.streamFile(
+    "/",
+    "/Users/me/Movies/clip.mp4",
+    {
+      begin: (file) => events.push(`begin ${file.mime} ${file.size}`),
+      write: (chunk) => events.push(`write ${decoder.decode(chunk)}`),
+    },
+    "req-stream",
+  );
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "file_explorer_request",
+      cwd: "/",
+      path: "/Users/me/Movies/clip.mp4",
+      mode: "file",
+      acceptBinary: true,
+      requestId: "req-stream",
+    },
+  });
+  const [begin, first, second, end] = fileFrames("req-stream", ["vid", "eo"]);
+  mock.triggerMessage(begin);
+  mock.triggerMessage(first);
+  // Delivered before the transfer ends: nothing is collected in memory.
+  expect(events).toEqual(["begin application/octet-stream 5", "write vid"]);
+  mock.triggerMessage(second);
+  mock.triggerMessage(end);
+
+  const file = await result;
+  expect(events).toEqual(["begin application/octet-stream 5", "write vid", "write eo"]);
+  expect(file).toEqual({
+    mime: "application/octet-stream",
+    size: 5,
+    path: "/Users/me/Movies/clip.mp4",
+    kind: "binary",
+    modifiedAt: "2026-05-02T00:00:00.000Z",
+    revision: undefined,
+  });
+});
+
+test("a failing sink fails streamFile with its own error and ignores the rest of the file", async () => {
+  const { mock, client } = await connectedFileClient("clsk_file_stream_failure");
+  const written: number[] = [];
+  const result = client.streamFile(
+    "/",
+    "/Users/me/Movies/clip.mp4",
+    {
+      begin: () => {},
+      write: (chunk) => {
+        written.push(chunk.byteLength);
+        throw new Error("Not enough space on the device");
+      },
+    },
+    "req-stream-full",
+  );
+  for (const frame of fileFrames("req-stream-full", ["abc", "def"])) mock.triggerMessage(frame);
+
+  await expect(result).rejects.toThrow("Not enough space on the device");
+  expect(written).toEqual([3]);
+});
+
 test("uploadFile sends metadata request and file bytes as binary chunks", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

@@ -328,9 +328,15 @@ export function visualToolResult(result: VisualToolDetails): VisualToolResult {
   };
 }
 
+/** Paseo's chat shows images and plays videos that a reply embeds; added only while attached. */
+export const MEDIA_PROMPT_GUIDELINE =
+  "To show the user an image or video file from this computer, embed it in your reply as Markdown: ![title](</absolute/path>). The Paseo chat shows images (.png .jpg .gif .webp .svg) and plays videos (.mp4 .mov .m4v .webm) exactly as they are; make a smaller copy only when the user asks.";
+
 export interface VisualToolDefinitionInput<T extends TSchema> {
   name: VisualToolName;
   description: string;
+  /** System-prompt guideline bullets, present while this tool is active. */
+  promptGuidelines?: string[];
   parameters: T;
   connection: VisualToolConnection;
   bind(sessionId: string): void;
@@ -343,6 +349,7 @@ export function createVisualTool<T extends TSchema>(
     name: input.name,
     label: input.name,
     description: input.description,
+    ...(input.promptGuidelines ? { promptGuidelines: input.promptGuidelines } : {}),
     parameters: input.parameters,
     outputSchema,
     exposure: "direct",
