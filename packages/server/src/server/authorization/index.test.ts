@@ -126,6 +126,27 @@ describe("SessionAuthorization", () => {
     expect(authorization.allowsOutbound(outboundMessage("agent_update"))).toBe(false);
   });
 
+  test("subscription account controls AND sign-in challenges require daemon management authority", () => {
+    const reader = new SessionAuthorization(
+      DAEMON_PERMISSIONS.filter((permission) => permission !== "daemon.manage"),
+    );
+    const manager = new SessionAuthorization(["daemon.manage"]);
+    for (const type of [
+      "subscription.accounts.read.request",
+      "subscription.accounts.action.request",
+    ] as const) {
+      expect(reader.allowsInbound(inboundMessage(type))).toBe(false);
+      expect(manager.allowsInbound(inboundMessage(type))).toBe(true);
+    }
+    for (const type of [
+      "subscription.accounts.read.response",
+      "subscription.accounts.action.response",
+    ] as const) {
+      expect(reader.allowsOutbound(outboundMessage(type))).toBe(false);
+      expect(manager.allowsOutbound(outboundMessage(type))).toBe(true);
+    }
+  });
+
   test("correlated authorization errors can always be emitted", () => {
     const authorization = new SessionAuthorization([]);
 

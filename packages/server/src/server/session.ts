@@ -469,6 +469,7 @@ export interface SessionOptions {
   directorySync?: DirectorySyncService;
   piWorkspace?: VisualService;
   piBackgroundJobs?: PiBackgroundJobsHub;
+  subscriptionAccounts?: import("./subscription-accounts/service.js").SubscriptionAccounts;
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
@@ -674,6 +675,7 @@ interface ClientActivity {
 export class Session {
   private readonly piWorkspace: VisualSession;
   private readonly piBackgroundJobs: BackgroundJobsSession;
+  private readonly subscriptionAccounts: SessionOptions["subscriptionAccounts"];
   readonly delivery = new SessionDelivery(
     (source, message) => {
       if (!this.authorization.allowsOutbound(message)) return;
@@ -802,6 +804,7 @@ export class Session {
   private readonly creationService: Pick<CreationService, "create" | "subscribe">;
 
   constructor(options: SessionOptions) {
+    this.subscriptionAccounts = options.subscriptionAccounts;
     const {
       clientId,
       permissions,
@@ -3064,8 +3067,57 @@ export class Session {
         return this.providerCatalogSession.handleProviderDiagnosticRequest(msg);
       case "provider.usage.list.request":
         return this.providerCatalogSession.handleProviderUsageListRequest(msg);
+      case "subscription.accounts.read.request":
+      case "subscription.accounts.action.request":
+        return this.handleSubscriptionAccounts(msg);
       default:
         return undefined;
+    }
+  }
+
+  private async handleSubscriptionAccounts(
+    msg: Extract<
+      SessionInboundMessage,
+      { type: "subscription.accounts.read.request" | "subscription.accounts.action.request" }
+    >,
+  ): Promise<void> {
+    const service = this.subscriptionAccounts;
+    if (msg.type === "subscription.accounts.read.request") {
+      try {
+        if (!service) throw new Error("Subscription accounts are unavailable on this host");
+        const snapshot = await service.read(msg.refresh);
+        this.emit({
+          type: "subscription.accounts.read.response",
+          payload: { requestId: msg.requestId, snapshot, error: null },
+        });
+      } catch (error) {
+        this.emit({
+          type: "subscription.accounts.read.response",
+          payload: {
+            requestId: msg.requestId,
+            snapshot: null,
+            error: error instanceof Error ? error.message : "Account read failed",
+          },
+        });
+      }
+      return;
+    }
+    try {
+      if (!service) throw new Error("Subscription accounts are unavailable on this host");
+      const operationId = await service.action(msg.action);
+      this.emit({
+        type: "subscription.accounts.action.response",
+        payload: { requestId: msg.requestId, operationId, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "subscription.accounts.action.response",
+        payload: {
+          requestId: msg.requestId,
+          operationId: null,
+          error: error instanceof Error ? error.message : "Account action failed",
+        },
+      });
     }
   }
 

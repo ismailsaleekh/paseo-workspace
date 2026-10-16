@@ -25,12 +25,14 @@ import { resolveShortcutKeysForAction } from "@/keyboard/keyboard-shortcuts";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { usePanelStore } from "@/stores/panel-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
+import { useLastWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { clearCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
 import {
   buildOpenProjectRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
   buildSettingsRoute,
+  buildSettingsHostSectionRoute,
 } from "@/utils/host-routes";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import type { CommandCenterContribution, CommandCenterIconProps } from "./contributions";
@@ -115,6 +117,10 @@ export function CommandCenterRootActions() {
   const openAddProject = useOpenAddProject();
   const { open: openImportSession, sheet: importSessionSheet } = useImportSession();
   const settingsRoute = useMemo<Href>(() => buildSettingsRoute(), []);
+  const lastWorkspace = useLastWorkspaceSelection();
+  const accountRoute = lastWorkspace
+    ? buildSettingsHostSectionRoute(lastWorkspace.serverId, "accounts")
+    : settingsRoute;
   const homeRoute = useMemo<Href>(() => buildOpenProjectRoute(), []);
   const sessionsRoute = useMemo<Href>(() => buildSessionsRoute(), []);
   const schedulesRoute = useMemo<Href>(() => buildSchedulesRoute(), []);
@@ -133,6 +139,24 @@ export function CommandCenterRootActions() {
   );
   const actions = useMemo<CommandCenterContribution[]>(() => {
     const availableActions: CommandCenterContribution[] = [
+      {
+        id: "subscription-accounts",
+        group: "actions",
+        groupRank: 0,
+        rank: 8,
+        keywords: ["accounts", "usage", "subscription", "claude", "codex", "login", "reset"],
+        visibility: "query",
+        run: () => {
+          clearCommandCenterFocusRestoreElement();
+          router.push(accountRoute);
+        },
+        presentation: {
+          kind: "action",
+          title: "Accounts & usage",
+          sectionTitle: t("shell.commandCenter.actions"),
+          icon: SettingsIcon,
+        },
+      },
       {
         id: "add-project",
         group: "actions",
@@ -342,6 +366,7 @@ export function CommandCenterRootActions() {
     setGroupMode,
     setShortcutsDialogOpen,
     settingsRoute,
+    accountRoute,
     shortcutPlatform,
     shortcutsAvailable,
     t,

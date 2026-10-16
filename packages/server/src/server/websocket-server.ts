@@ -527,6 +527,7 @@ function requireWebSocketServices(params: {
 export class VoiceAssistantWebSocketServer {
   private readonly piWorkspace: VisualService | undefined;
   private readonly piBackgroundJobs: PiBackgroundJobsHub | undefined;
+  private readonly subscriptionAccounts: SessionOptions["subscriptionAccounts"];
   private readonly logger: pino.Logger;
   private readonly wss: WebSocketServer;
   private readonly pendingConnections: Map<WebSocketLike, PendingConnection> = new Map();
@@ -666,9 +667,11 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     piWorkspace?: VisualService,
     piBackgroundJobs?: PiBackgroundJobsHub,
+    subscriptionAccounts?: SessionOptions["subscriptionAccounts"],
   ) {
     this.piWorkspace = piWorkspace;
     this.piBackgroundJobs = piBackgroundJobs;
+    this.subscriptionAccounts = subscriptionAccounts;
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
@@ -1501,6 +1504,7 @@ export class VoiceAssistantWebSocketServer {
       orchestrationSkills: this.orchestrationSkills,
       piWorkspace: this.piWorkspace,
       piBackgroundJobs: this.piBackgroundJobs,
+      subscriptionAccounts: this.subscriptionAccounts,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1798,6 +1802,7 @@ export class VoiceAssistantWebSocketServer {
       features: {
         ...(this.piWorkspace ? { piWorkspace: true, piVisualLibrary: true, piSpeech: true } : {}),
         ...(this.piBackgroundJobs ? { piBackgroundJobs: true } : {}),
+        ...(this.subscriptionAccounts ? { subscriptionAccounts: true } : {}),
         ownedSubscriptions: true,
         agentRequestReceipts: true,
         workspaceRequestReceipts: true,

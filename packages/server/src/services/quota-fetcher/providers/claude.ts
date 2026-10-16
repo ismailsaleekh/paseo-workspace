@@ -84,6 +84,8 @@ interface ClaudeQuotaProviderOptions {
   logger: Logger;
   claudeHome?: string;
   claudeKeychainReader?: () => Promise<unknown | null>;
+  /** A managed account owner may supply credentials without touching the standalone CLI login. */
+  credentials?: () => Promise<ClaudeCredentialRecord | null>;
   platform?: typeof process.platform;
   fetch?: ProviderApiFetch;
 }
@@ -346,6 +348,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   private readonly readKeychainCredentials: () => Promise<unknown | null>;
   private readonly platform: typeof process.platform;
   private readonly fetchApi: ProviderApiFetch;
+  private readonly accountCredentials?: () => Promise<ClaudeCredentialRecord | null>;
 
   constructor(options: ClaudeQuotaProviderOptions) {
     this.logger = options.logger.child({ module: "claude-quota-provider" });
@@ -354,6 +357,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     this.readKeychainCredentials = options.claudeKeychainReader ?? readClaudeKeychainCredentials;
     this.platform = options.platform ?? process.platform;
     this.fetchApi = options.fetch ?? fetch;
+    this.accountCredentials = options.credentials;
   }
 
   async fetchUsage(): Promise<ProviderUsage> {
@@ -435,6 +439,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   }
 
   private async readCredentials(): Promise<ClaudeCredentialRecord | null> {
+    if (this.accountCredentials) return this.accountCredentials();
     const credPath = join(this.claudeHome, ".credentials.json");
     const fileCredentials = await this.readCredentialFile(credPath);
     return (

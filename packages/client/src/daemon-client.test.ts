@@ -182,6 +182,83 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+test("subscription accounts refuse an older host without sending unsupported requests", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "accounts-old-host",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  mock.triggerOpen();
+  await connecting;
+  await expect(client.readSubscriptionAccounts()).rejects.toThrow("Update the Paseo host");
+  await expect(
+    client.subscriptionAccountAction({
+      kind: "activate",
+      accountId: "00000000-0000-4000-8000-000000000001",
+    }),
+  ).rejects.toThrow("Update the Paseo host");
+  expect(mock.sent).toEqual([]);
+});
+
+test("subscription account replies correlate and sign-in answers never enter traces or logs", async () => {
+  const mock = createMockTransport();
+  const recorder = createTraceRecorder();
+  const logger = createMockLogger();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "accounts-new-host",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+    trace: recorder.trace,
+    logger,
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  mock.triggerOpen({ features: { subscriptionAccounts: true } });
+  await connecting;
+  const snapshot = { accounts: [], operations: [], native: [] };
+  const reading = client.readSubscriptionAccounts(true);
+  const read = parseSentFrame(mock.sent.at(-1));
+  expect(read).toMatchObject({ type: "subscription.accounts.read.request", refresh: true });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "subscription.accounts.read.response",
+      payload: { requestId: read.requestId, snapshot, error: null },
+    }),
+  );
+  await expect(reading).resolves.toEqual(snapshot);
+  const answering = client.subscriptionAccountAction({
+    kind: "answer",
+    operationId: "00000000-0000-4000-8000-000000000002",
+    answer: "fixture-private-authorization-code",
+  });
+  const answer = parseSentFrame(mock.sent.at(-1));
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "subscription.accounts.action.response",
+      payload: {
+        requestId: answer.requestId,
+        operationId: "00000000-0000-4000-8000-000000000002",
+        error: null,
+      },
+    }),
+  );
+  await expect(answering).resolves.toBe("00000000-0000-4000-8000-000000000002");
+  expect(JSON.stringify(recorder.records)).not.toContain("fixture-private-authorization-code");
+  expect(
+    JSON.stringify([
+      logger.debug.mock.calls,
+      logger.info.mock.calls,
+      logger.warn.mock.calls,
+      logger.error.mock.calls,
+    ]),
+  ).not.toContain("fixture-private-authorization-code");
+});
+
 test("traces WebSocket frames, message types, and JSON parse duration", async () => {
   const mock = createMockTransport();
   const recorder = createTraceRecorder();

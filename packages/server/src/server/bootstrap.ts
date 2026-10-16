@@ -3,6 +3,7 @@ import { VisualStorage } from "./pi-workspace/storage.js";
 import { VisualService } from "./pi-workspace/service.js";
 import { VisualAttachmentBridge } from "./pi-workspace/attachment.js";
 import { PiBackgroundJobsHub } from "./pi-background-jobs/hub.js";
+import { createSubscriptionAccounts } from "./subscription-accounts/create.js";
 import type { BackgroundJobsAgentAvailability } from "./pi-background-jobs/hub.js";
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
@@ -904,6 +905,11 @@ export async function createPaseoDaemon(
     isDirectory: async (target) => (await stat(target).catch(() => null))?.isDirectory() ?? false,
     logger,
   });
+  const subscriptionAccounts = createSubscriptionAccounts({
+    config,
+    logger,
+    processes: managedProcesses,
+  });
   const agentProviderRuntime = await createAgentProviderRuntime({
     paseoHome: config.paseoHome,
     logger,
@@ -1610,6 +1616,7 @@ export async function createPaseoDaemon(
     try {
       await visualAttachment.start();
       await piBackgroundJobs.start();
+      await subscriptionAccounts.start();
       localCredential = await writeLocalCredential(config.paseoHome);
       if (serviceProxyListenTarget) {
         const boundServiceProxyTarget = await serviceProxy.startStandalone({
@@ -1757,6 +1764,7 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               piWorkspace,
               piBackgroundJobs,
+              subscriptionAccounts,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -1806,6 +1814,7 @@ export async function createPaseoDaemon(
       piWorkspace.close();
       await visualAttachment.stop();
       await piBackgroundJobs.stop();
+      subscriptionAccounts.close();
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
@@ -1838,6 +1847,7 @@ export async function createPaseoDaemon(
     await visualAttachment.stop();
     await piBackgroundJobs.stop();
     await closeAllAgents(logger, agentManager);
+    subscriptionAccounts.close();
     await agentManager.flushForShutdown().catch(() => undefined);
     detachAgentStoragePersistence();
     await agentStorage.flush().catch(() => undefined);

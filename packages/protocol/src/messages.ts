@@ -1,5 +1,11 @@
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
 import {
+  AccountsReadRequestSchema,
+  AccountsActionRequestSchema,
+  AccountsReadResponseSchema,
+  AccountsActionResponseSchema,
+} from "./subscription-accounts.js";
+import {
   VisualLibraryRequestSchema,
   VisualLibraryResponseSchema,
   VisualSubscribeRequestSchema,
@@ -3278,6 +3284,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotRequestMessageSchema,
   ProviderDiagnosticRequestMessageSchema,
   ProviderUsageListRequestMessageSchema,
+  AccountsReadRequestSchema,
+  AccountsActionRequestSchema,
   ResumeAgentRequestMessageSchema,
   ImportAgentRequestMessageSchema,
   RefreshAgentRequestMessageSchema,
@@ -3666,6 +3674,8 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceFileEditing: z.boolean().optional(),
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
         providerUsageList: z.boolean().optional(),
+        // COMPAT(subscriptionAccounts): added in v0.10.3 Workspace accounts build; remove gate after 2027-10-01.
+        subscriptionAccounts: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -6981,6 +6991,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotResponseMessageSchema,
   ProviderDiagnosticResponseMessageSchema,
   ProviderUsageListResponseMessageSchema,
+  AccountsReadResponseSchema,
+  AccountsActionResponseSchema,
   ListCommandsResponseSchema,
   ListTerminalsResponseSchema,
   TerminalsChangedSchema,

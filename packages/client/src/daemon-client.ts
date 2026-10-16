@@ -1,4 +1,5 @@
 import type { SpeechDevice } from "@getpaseo/protocol/pi-workspace/speech";
+import type { AccountAction, AccountsSnapshot } from "@getpaseo/protocol/subscription-accounts";
 import { type SpeechObserveResponse } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import { subscribeTimeline, type TimelineMessage } from "./timeline-subscription/index.js";
 import type {
@@ -5535,6 +5536,32 @@ export class DaemonClient {
       responseType: "provider_diagnostic_response",
       timeout: 180000,
     });
+  }
+
+  async readSubscriptionAccounts(refresh = false): Promise<AccountsSnapshot> {
+    this.requireSubscriptionAccounts();
+    const result =
+      await this.sendNamespacedCorrelatedSessionRequest<"subscription.accounts.read.response">({
+        message: { type: "subscription.accounts.read.request", refresh },
+      });
+    if (result.error || !result.snapshot)
+      throw new Error(result.error ?? "Account snapshot unavailable");
+    return result.snapshot;
+  }
+
+  async subscriptionAccountAction(action: AccountAction): Promise<string | null> {
+    this.requireSubscriptionAccounts();
+    const result =
+      await this.sendNamespacedCorrelatedSessionRequest<"subscription.accounts.action.response">({
+        message: { type: "subscription.accounts.action.request", action },
+      });
+    if (result.error) throw new Error(result.error);
+    return result.operationId;
+  }
+
+  private requireSubscriptionAccounts(): void {
+    if (!this.getLastServerInfoMessage()?.features?.subscriptionAccounts)
+      throw new Error("Update the Paseo host to manage subscription accounts");
   }
 
   async listProviderUsage(options?: { requestId?: string }): Promise<ProviderUsageListPayload> {
