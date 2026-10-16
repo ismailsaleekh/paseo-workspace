@@ -1,4 +1,4 @@
-import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
 import {
   parseSpeechEvent,
   type SpeechClientSignal,

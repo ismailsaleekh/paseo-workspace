@@ -7,7 +7,7 @@ import { MessageReceipts } from "./message-receipts/index.js";
 import { WebSocket, WebSocketServer } from "ws";
 import type { IncomingMessage, Server as HTTPServer } from "http";
 import { join } from "path";
-import { hostname as getHostname } from "node:os";
+import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AgentManager, AgentMetricsSnapshot } from "./agent/agent-manager.js";
@@ -22,6 +22,7 @@ import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-m
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
   type ServerInfoStatusPayload,
+  type ScriptStatusUpdateMessage,
   type SessionOutboundMessage,
   type WorkspaceSetupSnapshot,
   type WSHelloMessage,
@@ -92,7 +93,6 @@ import {
   type WebSocketRuntimeCounters,
   type WebSocketRuntimeDiagnosticSnapshot,
 } from "./websocket/runtime-metrics.js";
-import { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import { getProcessMemoryDiagnostics, getProcessUptimeSeconds } from "./process-diagnostics.js";
 import {
   CLIENT_SHUTDOWN_RPC_REASON,
@@ -589,7 +589,6 @@ export class VoiceAssistantWebSocketServer {
   private eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
   private unsubscribeSpeechReadiness: (() => void) | null = null;
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
-  private readonly providerUsageService: ProviderUsageService;
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
@@ -763,10 +762,6 @@ export class VoiceAssistantWebSocketServer {
       void this.broadcastAgentAttention(params).catch((err) => {
         this.logger.warn({ err, agentId: params.agentId }, "Failed to broadcast agent attention");
       });
-    });
-
-    this.providerUsageService = new ProviderUsageService({
-      logger: this.logger,
     });
 
     this.wss = this.createWebSocketServer(server, wsConfig, auth);
@@ -992,6 +987,12 @@ export class VoiceAssistantWebSocketServer {
       void session
         .emitProjectUpdate(update)
         .catch((error) => this.logger.warn({ err: error }, "Failed to publish project update"));
+    }
+  }
+
+  public publishScriptStatusUpdate(message: ScriptStatusUpdateMessage): void {
+    for (const session of this.listSessions()) {
+      session.emitServerMessage(message);
     }
   }
 
@@ -1482,6 +1483,7 @@ export class VoiceAssistantWebSocketServer {
           ),
         );
       },
+      publishScriptStatusUpdate: (message) => this.publishScriptStatusUpdate(message),
       downloadTokenStore: this.downloadTokenStore,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
@@ -1511,7 +1513,6 @@ export class VoiceAssistantWebSocketServer {
       tts: () => this.speech?.resolveTts() ?? null,
       terminalManager: this.terminalManager,
       providerSnapshotManager: this.providerSnapshotManager,
-      providerUsageService: this.providerUsageService,
       hubExecutionAgents: options.hubExecutionAgents,
       hubRelationships: options.hubRelationships,
       serviceProxy: this.serviceProxy ?? undefined,
@@ -1793,7 +1794,7 @@ export class VoiceAssistantWebSocketServer {
       status: "server_info",
       protocolVersion: WS_PROTOCOL_VERSION,
       serverId: this.serverId,
-      hostname: getHostname(),
+      hostname: getHostName(),
       version: this.daemonVersion,
       permissions: session.getPermissions(),
       // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
@@ -1803,6 +1804,7 @@ export class VoiceAssistantWebSocketServer {
         ...(this.piWorkspace ? { piWorkspace: true, piVisualLibrary: true, piSpeech: true } : {}),
         ...(this.piBackgroundJobs ? { piBackgroundJobs: true } : {}),
         ...(this.subscriptionAccounts ? { subscriptionAccounts: true } : {}),
+        usageSources: true,
         ownedSubscriptions: true,
         agentRequestReceipts: true,
         workspaceRequestReceipts: true,
@@ -1926,6 +1928,7 @@ export class VoiceAssistantWebSocketServer {
         commitBaseClassification: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
+        hopliteProvider: this.providerSnapshotManager.supportsConfigRequiredProvider("hoplite"),
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
         importSessionWorkspaceTarget: true,
         // COMPAT(importSessionSearch): added in v0.7.3, remove gate after 2027-03-02.

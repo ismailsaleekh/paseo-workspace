@@ -2,7 +2,7 @@
 
 Paseo is a mobile app for monitoring and controlling your local AI coding agents from anywhere. Your dev environment, in your pocket. Connects directly to your actual development environment — your code stays on your machine.
 
-**Supported agents:** Claude Code, Codex, GitHub Copilot, OpenCode, and Pi.
+**Supported agents:** Claude Code, Codex, GitHub Copilot, OpenCode, Pi, Antigravity, and Muse Code.
 
 ## Repository map
 
@@ -37,7 +37,8 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/menus.md](docs/menus.md)                                       | The menu engine — popover vs sheet, submenu pages, hover intent, when a decision earns a submenu                               |
 | [docs/expo-router.md](docs/expo-router.md)                           | Expo Router route ownership, startup restore, and native blank-screen gotchas                                                  |
 | [docs/file-icons.md](docs/file-icons.md)                             | Material icon theme integration for the file explorer                                                                          |
-| [docs/subscription-accounts.md](docs/subscription-accounts.md) | Pi account login, shared active selection, credential ownership, usage and confirmed Codex resets |
+| [docs/subscription-accounts.md](docs/subscription-accounts.md)       | Pi account login, shared active selection, credential ownership, usage and confirmed Codex resets                              |
+| [docs/workspace-upgrade.md](docs/workspace-upgrade.md)               | Custom Workspace upgrade base, retained behavior and selected upstream fixes                                                   |
 | [docs/providers.md](docs/providers.md)                               | Adding a new agent provider end-to-end                                                                                         |
 | [docs/forge-providers.md](docs/forge-providers.md)                   | Adding a git forge: registry/manifest, drop-in checklist, self-host/GHES, the two facts tiers                                  |
 | [docs/custom-providers.md](docs/custom-providers.md)                 | Custom provider config: Z.AI, Alibaba/Qwen, ACP agents, profiles, custom binaries                                              |

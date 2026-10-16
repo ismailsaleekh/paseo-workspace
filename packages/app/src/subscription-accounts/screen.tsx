@@ -7,12 +7,11 @@ import type {
   SubscriptionAccount,
   SubscriptionProvider,
 } from "@getpaseo/protocol/subscription-accounts";
-import type { ProviderUsage } from "@getpaseo/protocol/messages";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
-import { ProviderUsageCard } from "@/provider-usage/card";
+import { UsageWindowBar } from "@/usage/window-bar";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { AccountsModel, type AccountsView } from "./model";
@@ -299,28 +298,22 @@ function BankedReset({
   );
 }
 
+const noPin = () => undefined;
+
 function UsageCard({ usage, model }: { usage: AccountUsage; model: AccountsModel }) {
-  const open = useCallback(() => {
-    if (usage.manageUrl) void openExternalUrl(usage.manageUrl).catch(model.reportError);
-  }, [usage.manageUrl, model]);
-  const normalized = useMemo<ProviderUsage>(
-    () => ({
-      providerId: usage.source === "claude" ? "claude" : "codex",
-      displayName: usage.source === "claude" ? "Claude allowance" : "Codex allowance",
-      status: usage.error ? "error" : "available",
-      planLabel: null,
-      fetchedAt: usage.fetchedAt,
-      sourceLabel: usage.source === "codex" ? "Codex controls" : "Saved Claude account",
-      error: usage.error,
-      windows: usage.windows.map((window) => ({
+  const windows = useMemo(
+    () =>
+      usage.windows.map((window) => ({
         id: window.id,
         label: window.label,
         usedPct: window.usedPercent,
         resetsAt: window.resetsAt,
       })),
-    }),
-    [usage],
+    [usage.windows],
   );
+  const open = useCallback(() => {
+    if (usage.manageUrl) void openExternalUrl(usage.manageUrl).catch(model.reportError);
+  }, [usage.manageUrl, model]);
   return (
     <View style={styles.stack}>
       {usage.source === "chatgpt-sharing" ? (
@@ -328,7 +321,33 @@ function UsageCard({ usage, model }: { usage: AccountUsage; model: AccountsModel
           {usage.error ?? "Pi uses ChatGPT plan sharing. Its allowance is separate from Codex."}
         </Text>
       ) : (
-        <ProviderUsageCard usage={normalized} />
+        <View style={styles.stack}>
+          <Text style={styles.title}>
+            {usage.source === "claude" ? "Claude allowance" : "Codex allowance"}
+          </Text>
+          {usage.error ? (
+            <Text style={styles.error} accessibilityRole="alert">
+              {usage.error}
+            </Text>
+          ) : null}
+          {windows.map((window) => (
+            <UsageWindowBar
+              key={window.id}
+              window={window}
+              displayAs="used"
+              pinnable={false}
+              pinned={false}
+              onTogglePin={noPin}
+              pinLabel=""
+              pinTestID=""
+            />
+          ))}
+          {usage.fetchedAt ? (
+            <Text style={styles.muted}>
+              Last updated {new Date(usage.fetchedAt).toLocaleString()}
+            </Text>
+          ) : null}
+        </View>
       )}
       {usage.manageUrl ? (
         <Button size="sm" variant="ghost" onPress={open}>

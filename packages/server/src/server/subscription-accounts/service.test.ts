@@ -18,7 +18,7 @@ import { SubscriptionAccounts, type CodexAccountPort, type AccountOAuthPort } fr
 const homes: string[] = [];
 const services: SubscriptionAccounts[] = [];
 afterEach(async () => {
-  for (const service of services.splice(0)) service.close();
+  for (const service of services.splice(0)) await service.close();
   for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true });
 });
 function saved(label: string): SavedAccount {
@@ -253,7 +253,7 @@ test("consume-then-lost-reply blocks a second spend and reconciles the SAME atte
     .poll(async () => (await operationState(service, operationId))?.state)
     .toBe("unknown");
   expect(fixture.available).toBe(2);
-  service.close();
+  await service.close();
   const restarted = new SubscriptionAccounts(options);
   services.push(restarted);
   await restarted.start();

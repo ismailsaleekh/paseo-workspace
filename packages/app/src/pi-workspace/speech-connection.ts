@@ -7,8 +7,8 @@ import {
   type SpeechVoice,
 } from "@getpaseo/protocol/pi-workspace/speech";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { createAudioEngine } from "@/voice/audio-engine";
-import type { AudioEngine } from "@/voice/audio-engine-types";
+import { createAudioEngine } from "@/audio/audio-engine";
+import type { AudioEngine } from "@/audio/audio-engine-types";
 import { SpeechPlayer, type SpeechOrigin, type SpeechPlayerOptions } from "./speech-player";
 import { outputDrained, subscribeStopSpeechRequests, useBackgroundSpeech } from "./native-host";
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { SpeechEvent } from "@getpaseo/protocol/pi-workspace/speech";
-import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
 import {
   SPEECH_DRAIN_LIMIT_MS,
   SPEECH_DRAIN_POLL_MS,

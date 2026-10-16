@@ -31,7 +31,7 @@
     "pack:dry-run": "npm pack --dry-run --ignore-scripts"
   },
   "dependencies": {
-    "@getpaseo/protocol": "0.10.3",
+    "@getpaseo/protocol": "0.11.4",
     "zod": "4.4.3"
   },
   "devDependencies": {

@@ -10,7 +10,7 @@ import type {
   SubscriptionAccount,
   SubscriptionProvider,
 } from "@getpaseo/protocol/subscription-accounts";
-import { ClaudeQuotaProvider } from "../../services/quota-fetcher/providers/claude.js";
+import { ClaudeAccountUsage } from "./claude-usage.js";
 import { AccountStore, type OAuthCredential, type SavedAccount, type SavedGrant } from "./store.js";
 import type { LoginInteraction, LoginProfile } from "./oauth.js";
 import type { ResetOutcome } from "./codex.js";
@@ -60,6 +60,7 @@ export class SubscriptionAccounts {
   private refresh: Promise<void> | null = null;
   private readonly usageAttempted = new Map<string, number>();
   private readonly now: () => number;
+  private readonly claudeUsage = new ClaudeAccountUsage();
   private readonly codexTails = new Map<string, Promise<unknown>>();
   private actionTail: Promise<unknown> = Promise.resolve();
 
@@ -79,8 +80,10 @@ export class SubscriptionAccounts {
     });
   }
 
-  close(): void {
+  async close(): Promise<void> {
     for (const operation of this.operations.values()) operation.controller.abort();
+    // A usage read may be rotating a stored token. Let persistence finish before host teardown.
+    await this.refresh;
   }
 
   async read(refresh = false): Promise<AccountsSnapshot> {
@@ -553,35 +556,7 @@ export class SubscriptionAccounts {
       try {
         if (account.provider === "anthropic" && account.pi && native.connected.has(account.id)) {
           const token = await this.options.logins.credential(account.id);
-          const provider = new ClaudeQuotaProvider({
-            logger: this.options.logger,
-            credentials: async () => ({
-              oauth: {
-                accessToken: token.access,
-                ...(account.pi?.identity?.plan
-                  ? { subscriptionType: account.pi.identity.plan }
-                  : {}),
-              },
-            }),
-          });
-          const result = await provider.fetchUsage();
-          if (result.status !== "available")
-            throw new Error("Claude usage unavailable; check sign-in");
-          this.usage.set(account.id, [
-            {
-              source: "claude",
-              fetchedAt: new Date(this.now()).toISOString(),
-              error: null,
-              manageUrl: "https://claude.ai/settings/usage",
-              resets: null,
-              windows: result.windows.map((window) => ({
-                id: window.id,
-                label: window.label,
-                usedPercent: window.usedPct ?? null,
-                resetsAt: window.resetsAt ?? null,
-              })),
-            },
-          ]);
+          this.usage.set(account.id, [await this.claudeUsage.read(token.access)]);
         } else if (account.provider === "openai") {
           const renewalError = native.connected.has(account.id)
             ? await this.renewPiLogin(account.id)

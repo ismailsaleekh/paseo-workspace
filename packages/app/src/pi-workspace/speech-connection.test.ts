@@ -3,7 +3,7 @@ import { test } from "vitest";
 import type { ConnectionState } from "@getpaseo/client/internal/daemon-client";
 import type { VisualClientReceipt } from "@getpaseo/protocol/pi-workspace/rpc-schemas";
 import type { SpeechEvent, SpeechVoice } from "@getpaseo/protocol/pi-workspace/speech";
-import type { AudioEngine, AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioEngine, AudioPlaybackSource } from "@/audio/audio-engine-types";
 import { AppSpeech, getAppSpeechSnapshot, type AppSpeechClient } from "./speech-connection";
 
 type Observation = ReturnType<AppSpeechClient["observePiSpeech"]>;
